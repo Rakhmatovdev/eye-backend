@@ -32,6 +32,9 @@ func Run(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
 	if err := seedBlocklist(ctx, db, log); err != nil {
 		return err
 	}
+	if err := seedRBAC(ctx, db, log); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -168,6 +171,70 @@ func seedVulnerabilities(ctx context.Context, db *mongo.Database, log *zap.Logge
 		return err
 	}
 	log.Info("seeded vulnerabilities", zap.Int("count", len(docs)))
+	return nil
+}
+
+func seedRBAC(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	perms := db.Collection("permissions")
+	if n, _ := perms.CountDocuments(ctx, bson.M{}); n > 0 {
+		return nil
+	}
+
+	// permission_id -> {resource, action, name}
+	type perm struct{ id, resource, action, name string }
+	catalog := []perm{
+		{"perm-ent-read", "entities", "read", "Read Entities"},
+		{"perm-ent-write", "entities", "write", "Write Entities"},
+		{"perm-ent-delete", "entities", "delete", "Delete Entities"},
+		{"perm-case-read", "cases", "read", "Read Cases"},
+		{"perm-case-write", "cases", "write", "Write Cases"},
+		{"perm-audit-read", "audit", "read", "Read Audit Logs"},
+		{"perm-audit-export", "audit", "export", "Export Audit"},
+		{"perm-user-admin", "users", "admin", "Manage Users"},
+		{"perm-role-admin", "roles", "admin", "Manage Roles"},
+		{"perm-sec-read", "security", "read", "View Security"},
+		{"perm-sec-manage", "security", "manage", "Manage Security"},
+		{"perm-mon-read", "monitoring", "read", "View Monitoring"},
+		{"perm-agent-manage", "agents", "manage", "Manage Agents"},
+	}
+	permDocs := make([]interface{}, 0, len(catalog))
+	for _, p := range catalog {
+		permDocs = append(permDocs, bson.M{"_id": p.id, "resource": p.resource, "action": p.action, "name": p.name})
+	}
+	if _, err := perms.InsertMany(ctx, permDocs); err != nil {
+		return err
+	}
+
+	all := make([]string, len(catalog))
+	for i, p := range catalog {
+		all[i] = p.id
+	}
+	now := time.Now()
+	roles := []struct {
+		id, name, desc string
+		perms          []string
+	}{
+		{"role-admin", "admin", "Full system access with all administrative privileges", all},
+		{"role-analyst", "analyst", "Access to intelligence data, entities and cases", []string{"perm-ent-read", "perm-ent-write", "perm-case-read", "perm-case-write", "perm-sec-read", "perm-mon-read"}},
+		{"role-viewer", "viewer", "Read-only access to non-sensitive data", []string{"perm-ent-read", "perm-case-read"}},
+		{"role-operator", "operator", "Operational access including agent management", []string{"perm-ent-read", "perm-ent-write", "perm-case-read", "perm-agent-manage", "perm-mon-read"}},
+		{"role-auditor", "auditor", "Access to audit logs and compliance reporting", []string{"perm-ent-read", "perm-case-read", "perm-audit-read", "perm-audit-export", "perm-mon-read"}},
+	}
+	roleDocs := make([]interface{}, 0, len(roles))
+	var rpDocs []interface{}
+	for _, r := range roles {
+		roleDocs = append(roleDocs, bson.M{"_id": r.id, "name": r.name, "description": r.desc, "created_at": now})
+		for _, pid := range r.perms {
+			rpDocs = append(rpDocs, bson.M{"role_id": r.id, "permission_id": pid})
+		}
+	}
+	if _, err := db.Collection("roles").InsertMany(ctx, roleDocs); err != nil {
+		return err
+	}
+	if _, err := db.Collection("role_permissions").InsertMany(ctx, rpDocs); err != nil {
+		return err
+	}
+	log.Info("seeded RBAC", zap.Int("permissions", len(catalog)), zap.Int("roles", len(roles)))
 	return nil
 }
 

@@ -1,9 +1,11 @@
 package monitoring
 
 import (
-	"math/rand"
+	"runtime"
 	"time"
 )
+
+var startTime = time.Now()
 
 type Service struct{}
 
@@ -12,11 +14,15 @@ func NewService() *Service {
 }
 
 type MetricResponse struct {
-	CPUUsage    float64   `json:"cpu_usage"`
-	MemoryUsage float64   `json:"memory_usage"`
-	APIRequests int       `json:"api_requests"`
-	ActiveConns int       `json:"active_connections"`
-	Timestamp   time.Time `json:"timestamp"`
+	// Real process/runtime metrics (not synthetic).
+	HeapAllocMB   float64   `json:"heap_alloc_mb"`
+	SysMemMB      float64   `json:"sys_mem_mb"`
+	MemoryUsage   float64   `json:"memory_usage"` // heap as % of reserved sys, for gauge widgets
+	Goroutines    int       `json:"goroutines"`
+	NumGC         uint32    `json:"num_gc"`
+	UptimeSeconds int64     `json:"uptime_seconds"`
+	NumCPU        int       `json:"num_cpu"`
+	Timestamp     time.Time `json:"timestamp"`
 }
 
 type ServiceStatus struct {
@@ -25,12 +31,26 @@ type ServiceStatus struct {
 }
 
 func (s *Service) GetMetrics() MetricResponse {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	const mb = 1024 * 1024
+	heapMB := float64(m.HeapAlloc) / mb
+	sysMB := float64(m.Sys) / mb
+	memPct := 0.0
+	if sysMB > 0 {
+		memPct = heapMB / sysMB * 100
+	}
+
 	return MetricResponse{
-		CPUUsage:    rand.Float64()*40 + 10,
-		MemoryUsage: rand.Float64()*30 + 40,
-		APIRequests: rand.Intn(100) + 50,
-		ActiveConns: rand.Intn(20) + 10,
-		Timestamp:   time.Now(),
+		HeapAllocMB:   round2(heapMB),
+		SysMemMB:      round2(sysMB),
+		MemoryUsage:   round2(memPct),
+		Goroutines:    runtime.NumGoroutine(),
+		NumGC:         m.NumGC,
+		UptimeSeconds: int64(time.Since(startTime).Seconds()),
+		NumCPU:        runtime.NumCPU(),
+		Timestamp:     time.Now(),
 	}
 }
 
@@ -43,4 +63,8 @@ func (s *Service) GetServiceStatus() []ServiceStatus {
 		{Name: "Ingest Pipeline", Status: "up"},
 		{Name: "mTLS Agent Controller", Status: "up"},
 	}
+}
+
+func round2(f float64) float64 {
+	return float64(int64(f*100+0.5)) / 100
 }

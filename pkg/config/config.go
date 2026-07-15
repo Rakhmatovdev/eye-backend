@@ -58,5 +58,21 @@ func Load() (*Config, error) {
 		cfg.CORSOrigins = []string{"http://localhost:3000", "http://localhost:5173"}
 	}
 
+	// In production, refuse to boot with the built-in default JWT secrets.
+	if cfg.IsProduction() {
+		if isWeakSecret(cfg.JWTSecret) || isWeakSecret(cfg.JWTRefreshSecret) {
+			return nil, fmt.Errorf("refusing to start in production with a default/weak JWT secret; set strong JWT_SECRET and JWT_REFRESH_SECRET (>= 32 chars)")
+		}
+	}
+
 	return cfg, nil
+}
+
+// IsProduction reports whether the app is running in a production environment.
+func (c *Config) IsProduction() bool {
+	return strings.EqualFold(c.Environment, "production") || strings.EqualFold(c.Environment, "prod")
+}
+
+func isWeakSecret(s string) bool {
+	return len(s) < 32 || strings.Contains(s, "change-in-production") || strings.HasPrefix(s, "default-")
 }

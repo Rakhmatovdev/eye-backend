@@ -77,7 +77,7 @@ func main() {
 	go wsHub.Run()
 
 	// 6. Init Handlers
-	authHandler := auth.NewHandler(authSvc)
+	authHandler := auth.NewHandler(authSvc, auditSvc)
 	usersHandler := users.NewHandler(usersSvc)
 	rbacHandler := accesscontrol.NewHandler(rbacSvc)
 	auditHandler := audit.NewHandler(auditSvc)
@@ -88,7 +88,11 @@ func main() {
 	agentHandler := remoteagent.NewHandler(agentSvc)
 
 	// 7. Setup Router
-	gin.SetMode(gin.DebugMode)
+	if cfg.IsProduction() {
+		gin.SetMode(gin.ReleaseMode)
+	} else {
+		gin.SetMode(gin.DebugMode)
+	}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(logger.Middleware(log))
@@ -106,10 +110,13 @@ func main() {
 
 	// Authenticated routes
 	authMW := mw.Auth(cfg.JWTSecret)
-	v1Auth := r.Group("/api/v1", authMW)
+	v1Auth := r.Group("/api/v1", authMW, audit.Middleware(auditSvc))
 	{
 		v1Auth.POST("/auth/logout", authHandler.Logout)
 		v1Auth.GET("/auth/me", authHandler.Me)
+		v1Auth.POST("/auth/mfa/enroll", authHandler.EnrollMFA)
+		v1Auth.POST("/auth/mfa/verify", authHandler.VerifyMFA)
+		v1Auth.POST("/auth/mfa/disable", authHandler.DisableMFA)
 
 		// Users
 		userAdminMW := mw.RequireRole("admin")

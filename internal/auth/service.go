@@ -10,11 +10,14 @@ import (
 	"intelligence-platform/pkg/middleware"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pquerna/otp/totp"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 )
+
+const mfaIssuer = "Ko'z Intelligence Platform"
 
 const (
 	accessTokenTTL  = 15 * time.Minute
@@ -49,8 +52,10 @@ func NewService(db *mongo.Database, jwtSecret, jwtRefreshSecret string, log *zap
 func (s *Service) users() *mongo.Collection         { return s.db.Collection("users") }
 func (s *Service) refreshTokens() *mongo.Collection { return s.db.Collection("refresh_tokens") }
 
-// Login validates credentials and returns a token pair.
-func (s *Service) Login(ctx context.Context, email, password string) (*LoginResponse, error) {
+// Login validates credentials and returns a token pair. If the account has MFA
+// enabled, a valid TOTP code must be supplied; when it is missing the response
+// signals mfa_required instead of issuing tokens.
+func (s *Service) Login(ctx context.Context, email, password, otp string) (*LoginResponse, error) {
 	user, err := s.getUserByEmail(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("invalid credentials")
@@ -62,6 +67,15 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResp
 
 	if user.Status != "active" {
 		return nil, fmt.Errorf("account is %s", user.Status)
+	}
+
+	if user.MFAEnabled {
+		if otp == "" {
+			return &LoginResponse{MFARequired: true}, nil
+		}
+		if !totp.Validate(otp, user.MFASecret) {
+			return nil, fmt.Errorf("invalid MFA code")
+		}
 	}
 
 	// Update last login
@@ -135,6 +149,57 @@ func (s *Service) Logout(ctx context.Context, userID string) error {
 // GetMe returns the full user profile for a given user ID.
 func (s *Service) GetMe(ctx context.Context, userID string) (*User, error) {
 	return s.getUserByID(ctx, userID)
+}
+
+// EnrollMFA generates a new TOTP secret for the user (not yet enabled — the
+// user must confirm with VerifyMFA) and returns the enrollment details.
+func (s *Service) EnrollMFA(ctx context.Context, userID string) (*MFAEnrollResponse, error) {
+	user, err := s.getUserByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("user not found")
+	}
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: mfaIssuer, AccountName: user.Email})
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate MFA secret: %w", err)
+	}
+	// Store the pending secret; MFAEnabled stays false until verified.
+	_, err = s.users().UpdateByID(ctx, userID, bson.M{"$set": bson.M{"mfa_secret": key.Secret(), "mfa_enabled": false}})
+	if err != nil {
+		return nil, err
+	}
+	return &MFAEnrollResponse{Secret: key.Secret(), OTPAuthURL: key.URL()}, nil
+}
+
+// VerifyMFA confirms the pending TOTP secret and enables MFA for the user.
+func (s *Service) VerifyMFA(ctx context.Context, userID, otp string) error {
+	user, err := s.getUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("user not found")
+	}
+	if user.MFASecret == "" {
+		return fmt.Errorf("no pending MFA enrollment; call enroll first")
+	}
+	if !totp.Validate(otp, user.MFASecret) {
+		return fmt.Errorf("invalid MFA code")
+	}
+	_, err = s.users().UpdateByID(ctx, userID, bson.M{"$set": bson.M{"mfa_enabled": true}})
+	return err
+}
+
+// DisableMFA turns off MFA after verifying a current code.
+func (s *Service) DisableMFA(ctx context.Context, userID, otp string) error {
+	user, err := s.getUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("user not found")
+	}
+	if !user.MFAEnabled {
+		return fmt.Errorf("MFA is not enabled")
+	}
+	if !totp.Validate(otp, user.MFASecret) {
+		return fmt.Errorf("invalid MFA code")
+	}
+	_, err = s.users().UpdateByID(ctx, userID, bson.M{"$set": bson.M{"mfa_enabled": false, "mfa_secret": ""}})
+	return err
 }
 
 // generateTokenPair creates access + refresh JWT tokens.

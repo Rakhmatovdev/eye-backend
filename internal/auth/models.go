@@ -14,6 +14,8 @@ type User struct {
 	Role           string     `json:"role" bson:"role"`
 	ClearanceLevel int        `json:"clearance_level" bson:"clearance_level"`
 	Status         string     `json:"status" bson:"status"`
+	MFAEnabled     bool       `json:"mfa_enabled" bson:"mfa_enabled"`
+	MFASecret      string     `json:"-" bson:"mfa_secret"`
 	LastLogin      *time.Time `json:"last_login,omitempty" bson:"last_login"`
 	CreatedAt      time.Time  `json:"created_at" bson:"created_at"`
 }
@@ -22,14 +24,28 @@ type User struct {
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
+	OTP      string `json:"otp"` // required only when the account has MFA enabled
 }
 
-// LoginResponse is returned on successful login.
+// LoginResponse is returned on successful login. When MFARequired is true the
+// caller must resubmit with a valid OTP; the token fields are then empty.
 type LoginResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"` // seconds
-	User         *User  `json:"user"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresIn    int    `json:"expires_in,omitempty"` // seconds
+	MFARequired  bool   `json:"mfa_required,omitempty"`
+	User         *User  `json:"user,omitempty"`
+}
+
+// MFAEnrollResponse is returned by POST /auth/mfa/enroll.
+type MFAEnrollResponse struct {
+	Secret     string `json:"secret"`
+	OTPAuthURL string `json:"otpauth_url"`
+}
+
+// MFAVerifyRequest is the body for MFA verify/disable.
+type MFAVerifyRequest struct {
+	OTP string `json:"otp" binding:"required"`
 }
 
 // RefreshRequest is the body for POST /auth/refresh.
