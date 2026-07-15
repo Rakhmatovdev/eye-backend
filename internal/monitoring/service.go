@@ -36,8 +36,8 @@ func (s *Service) GetMetrics() MetricResponse {
 
 func (s *Service) GetServiceStatus() []ServiceStatus {
 	return []ServiceStatus{
-		{Name: "PostgreSQL", Status: "up"},
-		{Name: "Redis", Status: "up"},
+		{Name: "MongoDB Atlas", Status: "up"},
+		{Name: "API Gateway", Status: "up"},
 		{Name: "WebSocket Server", Status: "up"},
 		{Name: "SIEM Threat Engine", Status: "up"},
 		{Name: "Ingest Pipeline", Status: "up"},
