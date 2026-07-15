@@ -6,16 +6,16 @@ import (
 
 // User represents a platform user.
 type User struct {
-	ID             string    `json:"id" db:"id"`
-	Email          string    `json:"email" db:"email"`
-	PasswordHash   string    `json:"-" db:"password_hash"`
-	FirstName      string    `json:"first_name" db:"first_name"`
-	LastName       string    `json:"last_name" db:"last_name"`
-	Role           string    `json:"role" db:"role"`
-	ClearanceLevel int       `json:"clearance_level" db:"clearance_level"`
-	Status         string    `json:"status" db:"status"`
-	LastLogin      *time.Time `json:"last_login,omitempty" db:"last_login"`
-	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+	ID             string     `json:"id" bson:"_id"`
+	Email          string     `json:"email" bson:"email"`
+	PasswordHash   string     `json:"-" bson:"password_hash"`
+	FirstName      string     `json:"first_name" bson:"first_name"`
+	LastName       string     `json:"last_name" bson:"last_name"`
+	Role           string     `json:"role" bson:"role"`
+	ClearanceLevel int        `json:"clearance_level" bson:"clearance_level"`
+	Status         string     `json:"status" bson:"status"`
+	LastLogin      *time.Time `json:"last_login,omitempty" bson:"last_login"`
+	CreatedAt      time.Time  `json:"created_at" bson:"created_at"`
 }
 
 // LoginRequest is the body for POST /auth/login.

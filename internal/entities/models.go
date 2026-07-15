@@ -3,22 +3,22 @@ package entities
 import "time"
 
 type Entity struct {
-	ID             string                 `json:"id" db:"id"`
-	Type           string                 `json:"type" db:"type"`
-	Properties     map[string]interface{} `json:"properties" db:"properties"`
-	Classification string                 `json:"classification" db:"classification"`
-	SourceID       string                 `json:"source_id" db:"source_id"`
-	CreatedAt      time.Time              `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at" db:"updated_at"`
+	ID             string                 `json:"id" bson:"_id"`
+	Type           string                 `json:"type" bson:"type"`
+	Properties     map[string]interface{} `json:"properties" bson:"properties"`
+	Classification string                 `json:"classification" bson:"classification"`
+	SourceID       string                 `json:"source_id" bson:"source_id"`
+	CreatedAt      time.Time              `json:"created_at" bson:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at" bson:"updated_at"`
 }
 
 type Relationship struct {
-	ID           string                 `json:"id" db:"id"`
-	EntityIDFrom string                 `json:"entity_id_from" db:"entity_id_from"`
-	EntityIDTo   string                 `json:"entity_id_to" db:"entity_id_to"`
-	Type         string                 `json:"type" db:"type"`
-	Properties   map[string]interface{} `json:"properties" db:"properties"`
-	CreatedAt    time.Time              `json:"created_at" db:"created_at"`
+	ID           string                 `json:"id" bson:"_id"`
+	EntityIDFrom string                 `json:"entity_id_from" bson:"entity_id_from"`
+	EntityIDTo   string                 `json:"entity_id_to" bson:"entity_id_to"`
+	Type         string                 `json:"type" bson:"type"`
+	Properties   map[string]interface{} `json:"properties" bson:"properties"`
+	CreatedAt    time.Time              `json:"created_at" bson:"created_at"`
 }
 
 type CreateEntityRequest struct {

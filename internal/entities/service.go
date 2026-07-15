@@ -2,235 +2,255 @@ package entities
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	db  *pgxpool.Pool
+	db  *mongo.Database
 	log *zap.Logger
 }
 
-func NewService(db *pgxpool.Pool, log *zap.Logger) *Service {
+func NewService(db *mongo.Database, log *zap.Logger) *Service {
 	return &Service{db: db, log: log}
 }
 
-func (s *Service) CreateEntity(ctx context.Context, req CreateEntityRequest) (*Entity, error) {
-	id := uuid.New().String()
-	propsJSON, _ := json.Marshal(req.Properties)
+func (s *Service) entities() *mongo.Collection      { return s.db.Collection("entities") }
+func (s *Service) relationships() *mongo.Collection { return s.db.Collection("relationships") }
 
-	e := &Entity{}
-	var propsRaw []byte
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO entities (id, type, properties, classification, source_id)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, type, properties, classification, source_id, created_at, updated_at`,
-		id, req.Type, propsJSON, req.Classification, req.SourceID,
-	).Scan(&e.ID, &e.Type, &propsRaw, &e.Classification, &e.SourceID, &e.CreatedAt, &e.UpdatedAt)
-	if err != nil {
+func (s *Service) CreateEntity(ctx context.Context, req CreateEntityRequest) (*Entity, error) {
+	now := time.Now()
+	e := &Entity{
+		ID:             uuid.New().String(),
+		Type:           req.Type,
+		Properties:     req.Properties,
+		Classification: req.Classification,
+		SourceID:       req.SourceID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	if e.Properties == nil {
+		e.Properties = map[string]interface{}{}
+	}
+	if _, err := s.entities().InsertOne(ctx, e); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(propsRaw, &e.Properties)
 	return e, nil
 }
 
 func (s *Service) GetEntity(ctx context.Context, id string) (*Entity, error) {
 	e := &Entity{}
-	var propsRaw []byte
-	err := s.db.QueryRow(ctx,
-		`SELECT id, type, properties, classification, source_id, created_at, updated_at
-		 FROM entities WHERE id = $1`, id,
-	).Scan(&e.ID, &e.Type, &propsRaw, &e.Classification, &e.SourceID, &e.CreatedAt, &e.UpdatedAt)
-	if err != nil {
+	if err := s.entities().FindOne(ctx, bson.M{"_id": id}).Decode(e); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(propsRaw, &e.Properties)
 	return e, nil
 }
 
 func (s *Service) ListEntities(ctx context.Context, search, entType string) ([]*Entity, error) {
-	query := `SELECT id, type, properties, classification, source_id, created_at, updated_at 
-	          FROM entities 
-	          WHERE ($1 = '' OR type = $1)
-	            AND ($2 = '' OR properties::text ILIKE $2)`
-	
-	searchVal := ""
-	if search != "" {
-		searchVal = "%" + search + "%"
+	filter := bson.M{}
+	if entType != "" {
+		filter["type"] = entType
 	}
 
-	rows, err := s.db.Query(ctx, query, entType, searchVal)
+	cur, err := s.entities().Find(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
+	var all []*Entity
+	if err := cur.All(ctx, &all); err != nil {
+		return nil, err
+	}
+
+	// Free-form property search is done in-application (mirrors the old
+	// `properties::text ILIKE` behaviour across arbitrary JSON values).
+	if search == "" {
+		return all, nil
+	}
+	needle := strings.ToLower(search)
 	var list []*Entity
-	for rows.Next() {
-		e := &Entity{}
-		var propsRaw []byte
-		err = rows.Scan(&e.ID, &e.Type, &propsRaw, &e.Classification, &e.SourceID, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
-			return nil, err
+	for _, e := range all {
+		if entityMatches(e, needle) {
+			list = append(list, e)
 		}
-		_ = json.Unmarshal(propsRaw, &e.Properties)
-		list = append(list, e)
 	}
 	return list, nil
 }
 
-func (s *Service) CreateRelationship(ctx context.Context, req CreateRelationshipRequest) (*Relationship, error) {
-	id := uuid.New().String()
-	propsJSON, _ := json.Marshal(req.Properties)
+func entityMatches(e *Entity, needle string) bool {
+	if strings.Contains(strings.ToLower(e.Type), needle) {
+		return true
+	}
+	for _, v := range e.Properties {
+		if strings.Contains(strings.ToLower(valueToString(v)), needle) {
+			return true
+		}
+	}
+	return false
+}
 
-	r := &Relationship{}
-	var propsRaw []byte
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO relationships (id, entity_id_from, entity_id_to, type, properties)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, entity_id_from, entity_id_to, type, properties, created_at`,
-		id, req.EntityIDFrom, req.EntityIDTo, req.Type, propsJSON,
-	).Scan(&r.ID, &r.EntityIDFrom, &r.EntityIDTo, &r.Type, &propsRaw, &r.CreatedAt)
-	if err != nil {
+func valueToString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+func (s *Service) CreateRelationship(ctx context.Context, req CreateRelationshipRequest) (*Relationship, error) {
+	r := &Relationship{
+		ID:           uuid.New().String(),
+		EntityIDFrom: req.EntityIDFrom,
+		EntityIDTo:   req.EntityIDTo,
+		Type:         req.Type,
+		Properties:   req.Properties,
+		CreatedAt:    time.Now(),
+	}
+	if r.Properties == nil {
+		r.Properties = map[string]interface{}{}
+	}
+	if _, err := s.relationships().InsertOne(ctx, r); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(propsRaw, &r.Properties)
 	return r, nil
 }
 
 func (s *Service) Expand(ctx context.Context, nodeID string) ([]*Entity, []*Relationship, error) {
-	// Find all relationships connected to nodeID (either from or to)
-	rows, err := s.db.Query(ctx,
-		`SELECT id, entity_id_from, entity_id_to, type, properties, created_at 
-		 FROM relationships 
-		 WHERE entity_id_from = $1 OR entity_id_to = $1`, nodeID)
+	cur, err := s.relationships().Find(ctx, bson.M{
+		"$or": bson.A{
+			bson.M{"entity_id_from": nodeID},
+			bson.M{"entity_id_to": nodeID},
+		},
+	})
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
 	var rels []*Relationship
-	nodeIDs := make(map[string]bool)
-	nodeIDs[nodeID] = true
+	if err := cur.All(ctx, &rels); err != nil {
+		return nil, nil, err
+	}
 
-	for rows.Next() {
-		r := &Relationship{}
-		var propsRaw []byte
-		err = rows.Scan(&r.ID, &r.EntityIDFrom, &r.EntityIDTo, &r.Type, &propsRaw, &r.CreatedAt)
-		if err != nil {
-			return nil, nil, err
-		}
-		_ = json.Unmarshal(propsRaw, &r.Properties)
-		rels = append(rels, r)
+	nodeIDs := map[string]bool{nodeID: true}
+	for _, r := range rels {
 		nodeIDs[r.EntityIDFrom] = true
 		nodeIDs[r.EntityIDTo] = true
 	}
 
-	// Fetch all connected entities
-	var entities []*Entity
-	if len(nodeIDs) > 0 {
-		ids := []string{}
-		for id := range nodeIDs {
-			ids = append(ids, id)
-		}
-
-		rowsEnt, err := s.db.Query(ctx,
-			`SELECT id, type, properties, classification, source_id, created_at, updated_at 
-			 FROM entities WHERE id = ANY($1)`, ids)
-		if err != nil {
-			return nil, nil, err
-		}
-		defer rowsEnt.Close()
-
-		for rowsEnt.Next() {
-			e := &Entity{}
-			var propsRaw []byte
-			err = rowsEnt.Scan(&e.ID, &e.Type, &propsRaw, &e.Classification, &e.SourceID, &e.CreatedAt, &e.UpdatedAt)
-			if err != nil {
-				return nil, nil, err
-			}
-			_ = json.Unmarshal(propsRaw, &e.Properties)
-			entities = append(entities, e)
-		}
+	entities, err := s.entitiesByIDs(ctx, keys(nodeIDs))
+	if err != nil {
+		return nil, nil, err
 	}
-
 	return entities, rels, nil
 }
 
 func (s *Service) FindPath(ctx context.Context, startID, endID string) ([]*Entity, []*Relationship, error) {
-	// Simple BFS/recursive CTE to find path in Postgres
-	query := `
-		WITH RECURSIVE search_graph(from_id, to_id, depth, path) AS (
-			SELECT entity_id_from, entity_id_to, 1, ARRAY[entity_id_from, entity_id_to]
-			FROM relationships
-			WHERE entity_id_from = $1 OR entity_id_to = $1
-			UNION ALL
-			SELECT r.entity_id_from, r.entity_id_to, sg.depth + 1, path || 
-			       CASE WHEN sg.to_id = r.entity_id_from THEN r.entity_id_to ELSE r.entity_id_from END
-			FROM relationships r
-			JOIN search_graph sg ON sg.to_id = r.entity_id_from OR sg.from_id = r.entity_id_to
-			WHERE depth < 5 AND NOT (
-				CASE WHEN sg.to_id = r.entity_id_from THEN r.entity_id_to ELSE r.entity_id_from END = ANY(path)
-			)
-		)
-		SELECT path FROM search_graph 
-		WHERE path[array_length(path, 1)] = $2 
-		ORDER BY depth ASC LIMIT 1
-	`
-	var path []string
-	err := s.db.QueryRow(ctx, query, startID, endID).Scan(&path)
-	if err == pgx.ErrNoRows {
+	// Load the full relationship set and BFS over an undirected graph.
+	cur, err := s.relationships().Find(ctx, bson.M{})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cur.Close(ctx)
+
+	var allRels []*Relationship
+	if err := cur.All(ctx, &allRels); err != nil {
+		return nil, nil, err
+	}
+
+	adj := map[string][]string{}
+	for _, r := range allRels {
+		adj[r.EntityIDFrom] = append(adj[r.EntityIDFrom], r.EntityIDTo)
+		adj[r.EntityIDTo] = append(adj[r.EntityIDTo], r.EntityIDFrom)
+	}
+
+	// BFS with predecessor tracking (depth cap of 5 mirrors the old CTE).
+	prev := map[string]string{startID: ""}
+	depth := map[string]int{startID: 0}
+	queue := []string{startID}
+	found := startID == endID
+	for len(queue) > 0 && !found {
+		cur := queue[0]
+		queue = queue[1:]
+		if depth[cur] >= 5 {
+			continue
+		}
+		for _, nb := range adj[cur] {
+			if _, seen := prev[nb]; seen {
+				continue
+			}
+			prev[nb] = cur
+			depth[nb] = depth[cur] + 1
+			if nb == endID {
+				found = true
+				break
+			}
+			queue = append(queue, nb)
+		}
+	}
+
+	if _, ok := prev[endID]; !ok {
 		return []*Entity{}, []*Relationship{}, nil
-	} else if err != nil {
-		return nil, nil, err
 	}
 
-	// Fetch entities on path
-	rowsEnt, err := s.db.Query(ctx,
-		`SELECT id, type, properties, classification, source_id, created_at, updated_at 
-		 FROM entities WHERE id = ANY($1)`, path)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rowsEnt.Close()
-
-	var entities []*Entity
-	for rowsEnt.Next() {
-		e := &Entity{}
-		var propsRaw []byte
-		err = rowsEnt.Scan(&e.ID, &e.Type, &propsRaw, &e.Classification, &e.SourceID, &e.CreatedAt, &e.UpdatedAt)
-		if err != nil {
-			return nil, nil, err
+	// Reconstruct the path start -> end.
+	var path []string
+	for at := endID; at != ""; at = prev[at] {
+		path = append([]string{at}, path...)
+		if at == startID {
+			break
 		}
-		_ = json.Unmarshal(propsRaw, &e.Properties)
-		entities = append(entities, e)
+	}
+	pathSet := map[string]bool{}
+	for _, id := range path {
+		pathSet[id] = true
 	}
 
-	// Fetch relationships between path nodes
-	rowsRel, err := s.db.Query(ctx,
-		`SELECT id, entity_id_from, entity_id_to, type, properties, created_at 
-		 FROM relationships 
-		 WHERE entity_id_from = ANY($1) AND entity_id_to = ANY($1)`, path)
+	entities, err := s.entitiesByIDs(ctx, path)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rowsRel.Close()
 
+	// Relationships whose endpoints are both on the path.
 	var rels []*Relationship
-	for rowsRel.Next() {
-		r := &Relationship{}
-		var propsRaw []byte
-		err = rowsRel.Scan(&r.ID, &r.EntityIDFrom, &r.EntityIDTo, &r.Type, &propsRaw, &r.CreatedAt)
-		if err != nil {
-			return nil, nil, err
+	for _, r := range allRels {
+		if pathSet[r.EntityIDFrom] && pathSet[r.EntityIDTo] {
+			rels = append(rels, r)
 		}
-		_ = json.Unmarshal(propsRaw, &r.Properties)
-		rels = append(rels, r)
 	}
-
 	return entities, rels, nil
+}
+
+func (s *Service) entitiesByIDs(ctx context.Context, ids []string) ([]*Entity, error) {
+	if len(ids) == 0 {
+		return []*Entity{}, nil
+	}
+	cur, err := s.entities().Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	var list []*Entity
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+func keys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

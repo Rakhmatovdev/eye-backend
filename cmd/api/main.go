@@ -17,6 +17,7 @@ import (
 	"intelligence-platform/internal/realtime"
 	"intelligence-platform/internal/remoteagent"
 	"intelligence-platform/internal/security"
+	"intelligence-platform/internal/seed"
 	"intelligence-platform/internal/users"
 	"intelligence-platform/pkg/config"
 	"intelligence-platform/pkg/database"
@@ -44,36 +45,39 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 3. Connect DB & Redis
-	dbPool, err := database.NewPostgresPool(ctx, cfg.DBUrl, log)
+	// 3. Connect MongoDB
+	db, err := database.NewMongoDatabase(ctx, cfg.MongoURI, cfg.DBName, log)
 	if err != nil {
-		log.Fatal("Failed to connect to Postgres", zap.Error(err))
+		log.Fatal("Failed to connect to MongoDB", zap.Error(err))
 	}
-	defer dbPool.Close()
+	defer func() {
+		disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = db.Client().Disconnect(disconnectCtx)
+	}()
 
-	rdb, err := database.NewRedisClient(ctx, cfg.RedisURL, log)
-	if err != nil {
-		log.Fatal("Failed to connect to Redis", zap.Error(err))
+	// 3b. Ensure indexes and seed data
+	if err := seed.Run(ctx, db, log); err != nil {
+		log.Fatal("Failed to seed database", zap.Error(err))
 	}
-	defer rdb.Close()
 
 	// 4. Init Services
-	rbacSvc := accesscontrol.NewRBACService(dbPool, log)
-	authSvc := auth.NewService(dbPool, rdb, cfg.JWTSecret, cfg.JWTRefreshSecret, log)
-	usersSvc := users.NewService(dbPool, log)
-	auditSvc := audit.NewService(dbPool, log)
-	entitiesSvc := entities.NewService(dbPool, log)
-	casesSvc := cases.NewService(dbPool, log)
-	securitySvc := security.NewService(dbPool, log)
+	rbacSvc := accesscontrol.NewRBACService(db, log)
+	authSvc := auth.NewService(db, cfg.JWTSecret, cfg.JWTRefreshSecret, log)
+	usersSvc := users.NewService(db, log)
+	auditSvc := audit.NewService(db, log)
+	entitiesSvc := entities.NewService(db, log)
+	casesSvc := cases.NewService(db, log)
+	securitySvc := security.NewService(db, log)
 	monitoringSvc := monitoring.NewService()
-	agentSvc := remoteagent.NewService(dbPool, log)
+	agentSvc := remoteagent.NewService(db, log)
 
 	// 5. Init Hub & WebSocket
 	wsHub := realtime.NewHub(log)
 	go wsHub.Run()
 
 	// 6. Init Handlers
-	authHandler := auth.NewHandler(authSvc, rdb)
+	authHandler := auth.NewHandler(authSvc)
 	usersHandler := users.NewHandler(usersSvc)
 	rbacHandler := accesscontrol.NewHandler(rbacSvc)
 	auditHandler := audit.NewHandler(auditSvc)

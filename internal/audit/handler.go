@@ -48,7 +48,7 @@ func (h *Handler) Export(c *gin.Context) {
 	writer.Write([]string{"ID", "User ID", "Action", "Resource", "IP Address", "Result", "Hash", "Timestamp"})
 	for _, l := range logs {
 		writer.Write([]string{
-			strconv.Itoa(l.ID),
+			strconv.FormatInt(l.ID, 10),
 			l.UserID,
 			l.Action,
 			l.Resource,

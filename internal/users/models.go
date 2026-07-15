@@ -6,17 +6,17 @@ import (
 
 // User represents a platform user (full model).
 type User struct {
-	ID             string     `json:"id"`
-	Email          string     `json:"email"`
-	FirstName      string     `json:"first_name"`
-	LastName       string     `json:"last_name"`
-	Role           string     `json:"role"`
-	ClearanceLevel int        `json:"clearance_level"`
-	Status         string     `json:"status"`
-	Department     string     `json:"department"`
-	LastLogin      *time.Time `json:"last_login,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID             string     `json:"id" bson:"_id"`
+	Email          string     `json:"email" bson:"email"`
+	FirstName      string     `json:"first_name" bson:"first_name"`
+	LastName       string     `json:"last_name" bson:"last_name"`
+	Role           string     `json:"role" bson:"role"`
+	ClearanceLevel int        `json:"clearance_level" bson:"clearance_level"`
+	Status         string     `json:"status" bson:"status"`
+	Department     string     `json:"department" bson:"department"`
+	LastLogin      *time.Time `json:"last_login,omitempty" bson:"last_login"`
+	CreatedAt      time.Time  `json:"created_at" bson:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" bson:"updated_at"`
 }
 
 // CreateUserRequest is the body for POST /users.

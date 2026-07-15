@@ -9,13 +9,13 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	Port               string   `mapstructure:"PORT"`
-	DBUrl              string   `mapstructure:"DB_URL"`
-	RedisURL           string   `mapstructure:"REDIS_URL"`
-	JWTSecret          string   `mapstructure:"JWT_SECRET"`
-	JWTRefreshSecret   string   `mapstructure:"JWT_REFRESH_SECRET"`
-	CORSOrigins        []string `mapstructure:"CORS_ORIGINS"`
-	Environment        string   `mapstructure:"ENVIRONMENT"`
+	Port             string   `mapstructure:"PORT"`
+	MongoURI         string   `mapstructure:"MONGO_URI"`
+	DBName           string   `mapstructure:"DB_NAME"`
+	JWTSecret        string   `mapstructure:"JWT_SECRET"`
+	JWTRefreshSecret string   `mapstructure:"JWT_REFRESH_SECRET"`
+	CORSOrigins      []string `mapstructure:"CORS_ORIGINS"`
+	Environment      string   `mapstructure:"ENVIRONMENT"`
 }
 
 // Load reads configuration from .env file and environment variables.
@@ -27,6 +27,8 @@ func Load() (*Config, error) {
 	// Set defaults
 	viper.SetDefault("PORT", "8080")
 	viper.SetDefault("ENVIRONMENT", "development")
+	viper.SetDefault("DB_NAME", "intelligence_db")
+	viper.SetDefault("MONGO_URI", "mongodb://localhost:27017")
 	viper.SetDefault("JWT_SECRET", "default-secret-change-in-production-32chars")
 	viper.SetDefault("JWT_REFRESH_SECRET", "default-refresh-secret-change-in-production-32chars")
 

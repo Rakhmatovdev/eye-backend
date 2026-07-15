@@ -7,18 +7,16 @@ import (
 	mw "intelligence-platform/pkg/middleware"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
 // Handler handles HTTP requests for auth endpoints.
 type Handler struct {
 	svc *Service
-	rdb *redis.Client
 }
 
 // NewHandler creates a new auth handler.
-func NewHandler(svc *Service, rdb *redis.Client) *Handler {
-	return &Handler{svc: svc, rdb: rdb}
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
 }
 
 // Login godoc
@@ -31,7 +29,7 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	// Check lockout
-	locked, remaining, _ := mw.CheckLoginLockout(h.rdb, req.Email)
+	locked, remaining, _ := mw.CheckLoginLockout(req.Email)
 	if locked {
 		errors.FailMsg(c, http.StatusTooManyRequests,
 			"account locked due to too many failed attempts, try again in "+remaining.String())
@@ -41,7 +39,7 @@ func (h *Handler) Login(c *gin.Context) {
 	resp, err := h.svc.Login(c.Request.Context(), req.Email, req.Password)
 	if err != nil {
 		// Record failed attempt
-		lockedOut, _ := mw.RecordFailedLogin(h.rdb, req.Email)
+		lockedOut, _ := mw.RecordFailedLogin(req.Email)
 		if lockedOut {
 			errors.FailMsg(c, http.StatusTooManyRequests, "too many failed attempts, account locked for 15 minutes")
 		} else {
@@ -51,7 +49,7 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	// Clear failed login counter on success
-	mw.ClearFailedLogins(h.rdb, req.Email)
+	mw.ClearFailedLogins(req.Email)
 
 	errors.OK(c, resp)
 }

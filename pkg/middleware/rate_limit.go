@@ -1,93 +1,71 @@
 package middleware
 
 import (
-	"context"
-	"fmt"
-	"net/http"
+	"sync"
 	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 )
 
-// RateLimit returns a Redis-backed rate limiter middleware.
-// limit: max requests, window: time window.
-func RateLimit(rdb *redis.Client, limit int, window time.Duration) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ip := c.ClientIP()
-		key := fmt.Sprintf("ratelimit:%s:%s", c.FullPath(), ip)
+// In-memory login lockout tracking. Single-instance only; for a multi-replica
+// deployment this would move to a shared store. Replaces the previous
+// Redis-backed implementation.
 
-		ctx := context.Background()
-		pipe := rdb.Pipeline()
+const (
+	maxLoginFailures = 5
+	loginLockWindow  = 15 * time.Minute
+)
 
-		incr := pipe.Incr(ctx, key)
-		pipe.Expire(ctx, key, window)
-
-		if _, err := pipe.Exec(ctx); err != nil {
-			// On Redis failure, allow the request
-			c.Next()
-			return
-		}
-
-		count := incr.Val()
-		if count > int64(limit) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"success": false,
-				"error":   gin.H{"message": "rate limit exceeded, try again later"},
-			})
-			return
-		}
-
-		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
-		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", int64(limit)-count))
-
-		c.Next()
-	}
+type loginAttempt struct {
+	failures  int
+	windowEnd time.Time
+	lockUntil time.Time
 }
 
-// AuthRateLimit is a stricter rate limiter for auth endpoints (5 req/minute by default).
-func AuthRateLimit(rdb *redis.Client) gin.HandlerFunc {
-	return RateLimit(rdb, 20, time.Minute)
-}
+var (
+	loginMu       sync.Mutex
+	loginAttempts = make(map[string]*loginAttempt)
+)
 
-// CheckLoginLockout checks if an IP/email is locked out due to failed login attempts.
-func CheckLoginLockout(rdb *redis.Client, identifier string) (bool, time.Duration, error) {
-	key := fmt.Sprintf("lockout:%s", identifier)
-	ctx := context.Background()
+// CheckLoginLockout reports whether an identifier is currently locked out and,
+// if so, how much time remains.
+func CheckLoginLockout(identifier string) (bool, time.Duration, error) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
 
-	ttl, err := rdb.TTL(ctx, key).Result()
-	if err != nil {
-		return false, 0, err
+	a := loginAttempts[identifier]
+	if a == nil {
+		return false, 0, nil
 	}
-	if ttl > 0 {
-		return true, ttl, nil
+	if now := time.Now(); now.Before(a.lockUntil) {
+		return true, time.Until(a.lockUntil), nil
 	}
 	return false, 0, nil
 }
 
-// RecordFailedLogin increments the failed login counter. Returns true if locked out.
-func RecordFailedLogin(rdb *redis.Client, identifier string) (bool, error) {
-	ctx := context.Background()
-	key := fmt.Sprintf("loginfail:%s", identifier)
-	lockKey := fmt.Sprintf("lockout:%s", identifier)
+// RecordFailedLogin increments the failed-login counter for an identifier and
+// returns true if this failure triggered a lockout.
+func RecordFailedLogin(identifier string) (bool, error) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
 
-	count, err := rdb.Incr(ctx, key).Result()
-	if err != nil {
-		return false, err
+	now := time.Now()
+	a := loginAttempts[identifier]
+	if a == nil || now.After(a.windowEnd) {
+		a = &loginAttempt{windowEnd: now.Add(loginLockWindow)}
+		loginAttempts[identifier] = a
 	}
-	rdb.Expire(ctx, key, 15*time.Minute)
 
-	if count >= 5 {
-		rdb.Set(ctx, lockKey, "1", 15*time.Minute)
-		rdb.Del(ctx, key)
+	a.failures++
+	if a.failures >= maxLoginFailures {
+		a.lockUntil = now.Add(loginLockWindow)
+		a.failures = 0
 		return true, nil
 	}
 	return false, nil
 }
 
-// ClearFailedLogins removes the failed login counter after a successful login.
-func ClearFailedLogins(rdb *redis.Client, identifier string) {
-	ctx := context.Background()
-	rdb.Del(ctx, fmt.Sprintf("loginfail:%s", identifier))
-	rdb.Del(ctx, fmt.Sprintf("lockout:%s", identifier))
+// ClearFailedLogins resets the counter after a successful login.
+func ClearFailedLogins(identifier string) {
+	loginMu.Lock()
+	defer loginMu.Unlock()
+	delete(loginAttempts, identifier)
 }

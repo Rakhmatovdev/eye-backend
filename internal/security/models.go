@@ -3,19 +3,19 @@ package security
 import "time"
 
 type SecurityIncident struct {
-	ID              string                 `json:"id" db:"id"`
-	Type            string                 `json:"type" db:"type"`
-	Severity        string                 `json:"severity" db:"severity"`
-	RiskScore       int                    `json:"risk_score" db:"risk_score"`
-	Status          string                 `json:"status" db:"status"`
-	Details         map[string]interface{} `json:"details" db:"details"`
-	Title           string                 `json:"title" db:"title"`
-	Description     string                 `json:"description" db:"description"`
-	SourceIP        string                 `json:"source_ip" db:"source_ip"`
-	AffectedAssets  []string               `json:"affected_assets" db:"affected_assets"`
-	TLP             string                 `json:"tlp" db:"tlp"`
-	Assignee        *string                `json:"assignee,omitempty" db:"assignee"`
-	Timestamp       time.Time              `json:"timestamp" db:"ts"`
+	ID             string                 `json:"id" bson:"_id"`
+	Type           string                 `json:"type" bson:"type"`
+	Severity       string                 `json:"severity" bson:"severity"`
+	RiskScore      int                    `json:"risk_score" bson:"risk_score"`
+	Status         string                 `json:"status" bson:"status"`
+	Details        map[string]interface{} `json:"details" bson:"details"`
+	Title          string                 `json:"title" bson:"title"`
+	Description    string                 `json:"description" bson:"description"`
+	SourceIP       string                 `json:"source_ip" bson:"source_ip"`
+	AffectedAssets []string               `json:"affected_assets" bson:"affected_assets"`
+	TLP            string                 `json:"tlp" bson:"tlp"`
+	Assignee       *string                `json:"assignee,omitempty" bson:"assignee"`
+	Timestamp      time.Time              `json:"timestamp" bson:"ts"`
 }
 
 type ResolveIncidentRequest struct {
@@ -27,14 +27,14 @@ type AssignIncidentRequest struct {
 }
 
 type BlocklistItem struct {
-	ID        string     `json:"id" db:"id"`
-	Value     string     `json:"value" db:"value"`
-	Type      string     `json:"type" db:"type"` // ip, domain, cidr, asn
-	Reason    string     `json:"reason" db:"reason"`
-	HitCount  int        `json:"hit_count" db:"hit_count"`
-	AddedBy   string     `json:"added_by" db:"added_by"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty" db:"expires_at"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
+	ID        string     `json:"id" bson:"_id"`
+	Value     string     `json:"value" bson:"value"`
+	Type      string     `json:"type" bson:"type"` // ip, domain, cidr, asn
+	Reason    string     `json:"reason" bson:"reason"`
+	HitCount  int        `json:"hit_count" bson:"hit_count"`
+	AddedBy   string     `json:"added_by" bson:"added_by"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty" bson:"expires_at"`
+	CreatedAt time.Time  `json:"created_at" bson:"created_at"`
 }
 
 type CreateBlocklistRequest struct {
@@ -44,17 +44,17 @@ type CreateBlocklistRequest struct {
 }
 
 type Vulnerability struct {
-	ID            string    `json:"id" db:"id"`
-	CVEID         *string   `json:"cve_id,omitempty" db:"cve_id"`
-	Title         string    `json:"title" db:"title"`
-	Severity      string    `json:"severity" db:"severity"`
-	CVSSScore     float64   `json:"cvss_score" db:"cvss_score"`
-	Status        string    `json:"status" db:"status"`
-	AffectedAsset string    `json:"affected_asset" db:"affected_asset"`
-	Component     string    `json:"component" db:"component"`
-	Description   string    `json:"description" db:"description"`
-	Remediation   string    `json:"remediation" db:"remediation"`
-	DiscoveredAt  time.Time `json:"discovered_at" db:"discovered_at"`
+	ID            string    `json:"id" bson:"_id"`
+	CVEID         *string   `json:"cve_id,omitempty" bson:"cve_id"`
+	Title         string    `json:"title" bson:"title"`
+	Severity      string    `json:"severity" bson:"severity"`
+	CVSSScore     float64   `json:"cvss_score" bson:"cvss_score"`
+	Status        string    `json:"status" bson:"status"`
+	AffectedAsset string    `json:"affected_asset" bson:"affected_asset"`
+	Component     string    `json:"component" bson:"component"`
+	Description   string    `json:"description" bson:"description"`
+	Remediation   string    `json:"remediation" bson:"remediation"`
+	DiscoveredAt  time.Time `json:"discovered_at" bson:"discovered_at"`
 }
 
 type UpdateVulnerabilityStatusRequest struct {

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,36 +10,44 @@ import (
 	"intelligence-platform/pkg/middleware"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 )
 
 const (
 	accessTokenTTL  = 15 * time.Minute
 	refreshTokenTTL = 7 * 24 * time.Hour
-	refreshKeyPfx   = "refresh:"
 )
 
 // Service handles authentication business logic.
 type Service struct {
-	db               *pgxpool.Pool
-	rdb              *redis.Client
+	db               *mongo.Database
 	jwtSecret        string
 	jwtRefreshSecret string
 	log              *zap.Logger
 }
 
+// refreshToken is the stored refresh-token document (one per user, TTL-expired).
+type refreshToken struct {
+	UserID    string    `bson:"_id"`
+	Token     string    `bson:"token"`
+	ExpiresAt time.Time `bson:"expires_at"`
+}
+
 // NewService creates a new auth service.
-func NewService(db *pgxpool.Pool, rdb *redis.Client, jwtSecret, jwtRefreshSecret string, log *zap.Logger) *Service {
+func NewService(db *mongo.Database, jwtSecret, jwtRefreshSecret string, log *zap.Logger) *Service {
 	return &Service{
 		db:               db,
-		rdb:              rdb,
 		jwtSecret:        jwtSecret,
 		jwtRefreshSecret: jwtRefreshSecret,
 		log:              log,
 	}
 }
+
+func (s *Service) users() *mongo.Collection         { return s.db.Collection("users") }
+func (s *Service) refreshTokens() *mongo.Collection { return s.db.Collection("refresh_tokens") }
 
 // Login validates credentials and returns a token pair.
 func (s *Service) Login(ctx context.Context, email, password string) (*LoginResponse, error) {
@@ -56,14 +65,13 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResp
 	}
 
 	// Update last login
-	_, _ = s.db.Exec(ctx, `UPDATE users SET last_login = NOW() WHERE id = $1`, user.ID)
+	_, _ = s.users().UpdateByID(ctx, user.ID, bson.M{"$set": bson.M{"last_login": time.Now()}})
 
 	tokens, err := s.generateTokenPair(user)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate tokens: %w", err)
 	}
 
-	// Store refresh token in Redis
 	if err := s.storeRefreshToken(ctx, user.ID, tokens.RefreshToken); err != nil {
 		return nil, fmt.Errorf("failed to store refresh token: %w", err)
 	}
@@ -77,9 +85,9 @@ func (s *Service) Login(ctx context.Context, email, password string) (*LoginResp
 }
 
 // Refresh validates a refresh token and issues a new token pair.
-func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginResponse, error) {
+func (s *Service) Refresh(ctx context.Context, refreshTokenStr string) (*LoginResponse, error) {
 	claims := &middleware.Claims{}
-	token, err := jwt.ParseWithClaims(refreshToken, claims, func(t *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(refreshTokenStr, claims, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid
 		}
@@ -89,9 +97,10 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginRespo
 		return nil, fmt.Errorf("invalid refresh token")
 	}
 
-	// Verify token exists in Redis
-	stored, err := s.rdb.Get(ctx, refreshKeyPfx+claims.UserID).Result()
-	if err != nil || stored != refreshToken {
+	// Verify token exists in store and matches
+	var stored refreshToken
+	err = s.refreshTokens().FindOne(ctx, bson.M{"_id": claims.UserID}).Decode(&stored)
+	if err != nil || stored.Token != refreshTokenStr {
 		return nil, fmt.Errorf("refresh token expired or revoked")
 	}
 
@@ -119,7 +128,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*LoginRespo
 
 // Logout revokes the user's refresh token.
 func (s *Service) Logout(ctx context.Context, userID string) error {
-	return s.rdb.Del(ctx, refreshKeyPfx+userID).Err()
+	_, err := s.refreshTokens().DeleteOne(ctx, bson.M{"_id": userID})
+	return err
 }
 
 // GetMe returns the full user profile for a given user ID.
@@ -131,7 +141,6 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*User, error) {
 func (s *Service) generateTokenPair(user *User) (*TokenPair, error) {
 	now := time.Now()
 
-	// Access token
 	accessClaims := middleware.Claims{
 		UserID:         user.ID,
 		Email:          user.Email,
@@ -150,7 +159,6 @@ func (s *Service) generateTokenPair(user *User) (*TokenPair, error) {
 		return nil, err
 	}
 
-	// Refresh token
 	refreshClaims := middleware.Claims{
 		UserID: user.ID,
 		Email:  user.Email,
@@ -162,8 +170,8 @@ func (s *Service) generateTokenPair(user *User) (*TokenPair, error) {
 			Issuer:    "intelligence-platform",
 		},
 	}
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshStr, err := refreshToken.SignedString([]byte(s.jwtRefreshSecret))
+	refreshTok := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
+	refreshStr, err := refreshTok.SignedString([]byte(s.jwtRefreshSecret))
 	if err != nil {
 		return nil, err
 	}
@@ -172,17 +180,22 @@ func (s *Service) generateTokenPair(user *User) (*TokenPair, error) {
 }
 
 func (s *Service) storeRefreshToken(ctx context.Context, userID, token string) error {
-	return s.rdb.Set(ctx, refreshKeyPfx+userID, token, refreshTokenTTL).Err()
+	doc := refreshToken{
+		UserID:    userID,
+		Token:     token,
+		ExpiresAt: time.Now().Add(refreshTokenTTL),
+	}
+	_, err := s.refreshTokens().ReplaceOne(ctx, bson.M{"_id": userID}, doc, options.Replace().SetUpsert(true))
+	return err
 }
 
 func (s *Service) getUserByEmail(ctx context.Context, email string) (*User, error) {
 	user := &User{}
-	row := s.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, first_name, last_name, role, clearance_level, status, last_login, created_at
-		 FROM users WHERE email = $1`, email)
-	err := row.Scan(&user.ID, &user.Email, &user.PasswordHash, &user.FirstName, &user.LastName,
-		&user.Role, &user.ClearanceLevel, &user.Status, &user.LastLogin, &user.CreatedAt)
+	err := s.users().FindOne(ctx, bson.M{"email": email}).Decode(user)
 	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("user not found")
+		}
 		return nil, err
 	}
 	return user, nil
@@ -190,12 +203,11 @@ func (s *Service) getUserByEmail(ctx context.Context, email string) (*User, erro
 
 func (s *Service) getUserByID(ctx context.Context, id string) (*User, error) {
 	user := &User{}
-	row := s.db.QueryRow(ctx,
-		`SELECT id, email, password_hash, first_name, last_name, role, clearance_level, status, last_login, created_at
-		 FROM users WHERE id = $1`, id)
-	err := row.Scan(&user.ID, &user.Email, &user.PasswordHash, &user.FirstName, &user.LastName,
-		&user.Role, &user.ClearanceLevel, &user.Status, &user.LastLogin, &user.CreatedAt)
+	err := s.users().FindOne(ctx, bson.M{"_id": id}).Decode(user)
 	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, fmt.Errorf("user not found")
+		}
 		return nil, err
 	}
 	return user, nil

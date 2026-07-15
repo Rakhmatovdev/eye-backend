@@ -1,38 +1,37 @@
 # Intelligence Platform — Backend
 
-## Setup Instructions
+Go/Gin API backed by **MongoDB Atlas**.
+
+## Setup
 
 ### 1. Prerequisites
 - Go 1.22+
-- Docker & Docker Compose
+- A MongoDB database (MongoDB Atlas free tier works)
 
-### 2. Start Infrastructure
+### 2. Configure
 ```bash
 cp .env.example .env
-docker-compose up -d
+# edit .env and set MONGO_URI + DB_NAME (and JWT secrets for production)
 ```
 
-### 3. Install Dependencies
+### 3. Install dependencies
 ```bash
 go mod tidy
 ```
 
-### 4. Apply Database Migrations
-Run each migration file against the `intelligence_db` database, in order (there is no
-auto-migrate step in `cmd/api`):
-```bash
-docker exec -i $(docker compose ps -q postgres) psql -U intel_user -d intelligence_db < migrations/001_init.sql
-docker exec -i $(docker compose ps -q postgres) psql -U intel_user -d intelligence_db < migrations/002_security_enhancements.sql
-```
-
-### 5. Run the API
+### 4. Run the API
 ```bash
 go run cmd/api/main.go
+# or build (this repo needs -buildvcs=false in some environments)
+go build -buildvcs=false -o api.exe ./cmd/api && ./api.exe
 ```
 
-### 5. Default Admin Credentials
-- **Email:** admin@platform.io
-- **Password:** Admin123!
+On first start the server auto-creates indexes and seeds users + security demo
+data (`internal/seed`). No manual migration step is required.
+
+### Default credentials (seeded)
+- **Admin:** admin@platform.io / Admin123!
+- **Analyst:** analyst@platform.io / Analyst123!
 
 ## API Endpoints
 
@@ -50,16 +49,24 @@ go run cmd/api/main.go
 | GET | /api/v1/cases | List cases |
 | GET | /api/v1/audit | Audit log |
 | GET | /api/v1/security/dashboard | Security stats |
+| GET | /api/v1/security/incidents | Security incidents |
+| GET | /api/v1/security/vulnerabilities | Vulnerabilities |
+| GET | /api/v1/security/blocklist | Blocklist |
+| GET | /api/v1/security/network-map | Attack map |
 | GET | /api/v1/monitoring/metrics | System metrics |
 | GET | /api/v1/agents | Remote agents |
-| WS | /ws | Main WebSocket |
-| WS | /ws/monitoring | Monitoring stream |
-| WS | /ws/agents | Agent stream |
+| WS | /ws | WebSocket |
 
 ## Architecture
 - **Framework:** Gin
-- **Database:** PostgreSQL 16 (pgx/v5)
-- **Cache/Sessions:** Redis 7
-- **Auth:** JWT (access 15m + refresh 7d)
+- **Database:** MongoDB (mongo-driver, `*mongo.Database`)
+- **Auth:** JWT (access 15m + refresh 7d); refresh tokens stored in a Mongo
+  TTL collection, login lockout is in-memory
 - **Real-time:** WebSocket (gorilla/websocket)
 - **Logging:** Uber Zap
+
+## Data model (collections)
+`users`, `refresh_tokens` (TTL), `audit_logs` (+ `counters`), `entities`,
+`relationships`, `cases`, `case_entities`, `security_incidents`,
+`vulnerabilities`, `blocklist`, `remote_agents`, `agent_commands`, plus RBAC:
+`roles`, `permissions`, `role_permissions`, `user_roles`.

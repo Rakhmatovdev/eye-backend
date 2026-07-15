@@ -3,15 +3,15 @@ package cases
 import "time"
 
 type Case struct {
-	ID             string    `json:"id" db:"id"`
-	Title          string    `json:"title" db:"title"`
-	Description    string    `json:"description" db:"description"`
-	Status         string    `json:"status" db:"status"`
-	Priority       string    `json:"priority" db:"priority"`
-	Classification string    `json:"classification" db:"classification"`
-	OwnerID        string    `json:"owner_id" db:"owner_id"`
-	CreatedAt      time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
+	ID             string    `json:"id" bson:"_id"`
+	Title          string    `json:"title" bson:"title"`
+	Description    string    `json:"description" bson:"description"`
+	Status         string    `json:"status" bson:"status"`
+	Priority       string    `json:"priority" bson:"priority"`
+	Classification string    `json:"classification" bson:"classification"`
+	OwnerID        string    `json:"owner_id" bson:"owner_id"`
+	CreatedAt      time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" bson:"updated_at"`
 }
 
 type CreateCaseRequest struct {

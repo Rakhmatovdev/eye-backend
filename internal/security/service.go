@@ -2,93 +2,77 @@ package security
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	db  *pgxpool.Pool
+	db  *mongo.Database
 	log *zap.Logger
 }
 
-func NewService(db *pgxpool.Pool, log *zap.Logger) *Service {
+func NewService(db *mongo.Database, log *zap.Logger) *Service {
 	return &Service{db: db, log: log}
 }
 
+func (s *Service) incidents() *mongo.Collection { return s.db.Collection("security_incidents") }
+func (s *Service) blocklist() *mongo.Collection { return s.db.Collection("blocklist") }
+func (s *Service) vulns() *mongo.Collection      { return s.db.Collection("vulnerabilities") }
+
 func (s *Service) GetDashboardStats(ctx context.Context) (map[string]interface{}, error) {
-	var criticalOpen, highOpen, totalOpen, blockedCount int
-	var openVulns, criticalVulns int
+	criticalOpen, _ := s.incidents().CountDocuments(ctx, bson.M{"severity": "critical", "status": bson.M{"$ne": "resolved"}})
+	highOpen, _ := s.incidents().CountDocuments(ctx, bson.M{"severity": "high", "status": bson.M{"$ne": "resolved"}})
+	totalOpen, _ := s.incidents().CountDocuments(ctx, bson.M{"status": bson.M{"$ne": "resolved"}})
+	blockedCount, _ := s.blocklist().CountDocuments(ctx, bson.M{})
+	openVulns, _ := s.vulns().CountDocuments(ctx, bson.M{"status": bson.M{"$in": bson.A{"open", "patching"}}})
+	criticalVulns, _ := s.vulns().CountDocuments(ctx, bson.M{"severity": "critical", "status": bson.M{"$nin": bson.A{"resolved"}}})
 
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM security_incidents WHERE severity = 'critical' AND status != 'resolved'").Scan(&criticalOpen)
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM security_incidents WHERE severity = 'high' AND status != 'resolved'").Scan(&highOpen)
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM security_incidents WHERE status != 'resolved'").Scan(&totalOpen)
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM blocklist").Scan(&blockedCount)
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM vulnerabilities WHERE status IN ('open','patching')").Scan(&openVulns)
-	_ = s.db.QueryRow(ctx, "SELECT COUNT(*) FROM vulnerabilities WHERE severity = 'critical' AND status NOT IN ('resolved')").Scan(&criticalVulns)
-
-	riskScore := 12 + criticalOpen*16 + highOpen*7 + openVulns*3 + criticalVulns*6
+	riskScore := 12 + int(criticalOpen)*16 + int(highOpen)*7 + int(openVulns)*3 + int(criticalVulns)*6
 	if riskScore > 100 {
 		riskScore = 100
 	}
 
 	return map[string]interface{}{
-		"critical_incidents":  criticalOpen,
-		"high_incidents":      highOpen,
-		"open_threats":        totalOpen,
-		"blocked_items":       blockedCount,
-		"open_vulnerabilities": openVulns,
-		"overall_risk_score":  riskScore,
+		"critical_incidents":   int(criticalOpen),
+		"high_incidents":       int(highOpen),
+		"open_threats":         int(totalOpen),
+		"blocked_items":        int(blockedCount),
+		"open_vulnerabilities": int(openVulns),
+		"overall_risk_score":   riskScore,
 	}, nil
 }
 
 func (s *Service) ListIncidents(ctx context.Context) ([]*SecurityIncident, error) {
-	rows, err := s.db.Query(ctx,
-		`SELECT id, type, severity, risk_score, status, details, title, description, source_ip, affected_assets, tlp, assignee, ts
-		 FROM security_incidents ORDER BY ts DESC LIMIT 200`)
+	opts := options.Find().SetSort(bson.D{{Key: "ts", Value: -1}}).SetLimit(200)
+	cur, err := s.incidents().Find(ctx, bson.M{}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
 	var list []*SecurityIncident
-	for rows.Next() {
-		si, err := scanIncident(rows)
-		if err != nil {
-			return nil, err
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	for _, si := range list {
+		if si.AffectedAssets == nil {
+			si.AffectedAssets = []string{}
 		}
-		list = append(list, si)
 	}
 	return list, nil
 }
 
 func (s *Service) GetIncident(ctx context.Context, id string) (*SecurityIncident, error) {
-	row := s.db.QueryRow(ctx,
-		`SELECT id, type, severity, risk_score, status, details, title, description, source_ip, affected_assets, tlp, assignee, ts
-		 FROM security_incidents WHERE id = $1`, id)
-	return scanIncident(row)
-}
-
-// rowScanner abstracts pgx.Row / pgx.Rows so a single scan helper can serve both.
-type rowScanner interface {
-	Scan(dest ...interface{}) error
-}
-
-func scanIncident(row rowScanner) (*SecurityIncident, error) {
 	si := &SecurityIncident{}
-	var detailsRaw, assetsRaw []byte
-	err := row.Scan(
-		&si.ID, &si.Type, &si.Severity, &si.RiskScore, &si.Status, &detailsRaw,
-		&si.Title, &si.Description, &si.SourceIP, &assetsRaw, &si.TLP, &si.Assignee, &si.Timestamp,
-	)
-	if err != nil {
+	if err := s.incidents().FindOne(ctx, bson.M{"_id": id}).Decode(si); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(detailsRaw, &si.Details)
-	_ = json.Unmarshal(assetsRaw, &si.AffectedAssets)
 	if si.AffectedAssets == nil {
 		si.AffectedAssets = []string{}
 	}
@@ -96,7 +80,7 @@ func scanIncident(row rowScanner) (*SecurityIncident, error) {
 }
 
 func (s *Service) UpdateIncidentStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.Exec(ctx, "UPDATE security_incidents SET status = $1 WHERE id = $2", status, id)
+	_, err := s.incidents().UpdateByID(ctx, id, bson.M{"$set": bson.M{"status": status}})
 	return err
 }
 
@@ -105,119 +89,132 @@ func (s *Service) ResolveIncident(ctx context.Context, id string) error {
 }
 
 func (s *Service) AssignIncident(ctx context.Context, id, assignee string) error {
-	_, err := s.db.Exec(ctx, "UPDATE security_incidents SET assignee = $1 WHERE id = $2", assignee, id)
+	_, err := s.incidents().UpdateByID(ctx, id, bson.M{"$set": bson.M{"assignee": assignee}})
 	return err
 }
 
 func (s *Service) AddToBlocklist(ctx context.Context, req CreateBlocklistRequest, addedBy string) (*BlocklistItem, error) {
-	id := uuid.New().String()
-	item := &BlocklistItem{}
 	if addedBy == "" {
 		addedBy = "Admin"
 	}
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO blocklist (id, value, type, reason, added_by)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, value, type, reason, hit_count, added_by, expires_at, created_at`,
-		id, req.Value, req.Type, req.Reason, addedBy,
-	).Scan(&item.ID, &item.Value, &item.Type, &item.Reason, &item.HitCount, &item.AddedBy, &item.ExpiresAt, &item.CreatedAt)
-	return item, err
+	item := &BlocklistItem{
+		ID:        uuid.New().String(),
+		Value:     req.Value,
+		Type:      req.Type,
+		Reason:    req.Reason,
+		HitCount:  0,
+		AddedBy:   addedBy,
+		CreatedAt: time.Now(),
+	}
+	if _, err := s.blocklist().InsertOne(ctx, item); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
 
 func (s *Service) ListBlocklist(ctx context.Context) ([]*BlocklistItem, error) {
-	rows, err := s.db.Query(ctx,
-		"SELECT id, value, type, reason, hit_count, added_by, expires_at, created_at FROM blocklist ORDER BY created_at DESC")
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+	cur, err := s.blocklist().Find(ctx, bson.M{}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
 	var list []*BlocklistItem
-	for rows.Next() {
-		b := &BlocklistItem{}
-		err = rows.Scan(&b.ID, &b.Value, &b.Type, &b.Reason, &b.HitCount, &b.AddedBy, &b.ExpiresAt, &b.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		list = append(list, b)
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
 	}
 	return list, nil
 }
 
 func (s *Service) RemoveFromBlocklist(ctx context.Context, id string) error {
-	_, err := s.db.Exec(ctx, "DELETE FROM blocklist WHERE id = $1", id)
+	_, err := s.blocklist().DeleteOne(ctx, bson.M{"_id": id})
 	return err
 }
 
 func (s *Service) ListVulnerabilities(ctx context.Context) ([]*Vulnerability, error) {
-	rows, err := s.db.Query(ctx,
-		`SELECT id, cve_id, title, severity, cvss_score, status, affected_asset, component, description, remediation, discovered_at
-		 FROM vulnerabilities ORDER BY cvss_score DESC`)
+	opts := options.Find().SetSort(bson.D{{Key: "cvss_score", Value: -1}})
+	cur, err := s.vulns().Find(ctx, bson.M{}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
 	var list []*Vulnerability
-	for rows.Next() {
-		v := &Vulnerability{}
-		if err := rows.Scan(&v.ID, &v.CVEID, &v.Title, &v.Severity, &v.CVSSScore, &v.Status, &v.AffectedAsset, &v.Component, &v.Description, &v.Remediation, &v.DiscoveredAt); err != nil {
-			return nil, err
-		}
-		list = append(list, v)
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
 	}
 	return list, nil
 }
 
 func (s *Service) UpdateVulnerabilityStatus(ctx context.Context, id, status string) (*Vulnerability, error) {
-	_, err := s.db.Exec(ctx, "UPDATE vulnerabilities SET status = $1, updated_at = NOW() WHERE id = $2", status, id)
+	_, err := s.vulns().UpdateByID(ctx, id, bson.M{"$set": bson.M{"status": status, "updated_at": time.Now()}})
 	if err != nil {
 		return nil, err
 	}
 	v := &Vulnerability{}
-	err = s.db.QueryRow(ctx,
-		`SELECT id, cve_id, title, severity, cvss_score, status, affected_asset, component, description, remediation, discovered_at
-		 FROM vulnerabilities WHERE id = $1`, id,
-	).Scan(&v.ID, &v.CVEID, &v.Title, &v.Severity, &v.CVSSScore, &v.Status, &v.AffectedAsset, &v.Component, &v.Description, &v.Remediation, &v.DiscoveredAt)
-	return v, err
+	if err := s.vulns().FindOne(ctx, bson.M{"_id": id}).Decode(v); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 func (s *Service) GetAttackMap(ctx context.Context) ([]*AttackMapNode, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT source_ip,
-		       COUNT(*) AS cnt,
-		       (ARRAY_AGG(severity ORDER BY
-		           CASE severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END DESC
-		       ))[1] AS top_severity
-		FROM security_incidents
-		WHERE source_ip IS NOT NULL AND source_ip != 'unknown' AND source_ip != ''
-		GROUP BY source_ip
-		ORDER BY cnt DESC
-		LIMIT 9
-	`)
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"source_ip": bson.M{"$nin": bson.A{nil, "", "unknown"}},
+		}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":        "$source_ip",
+			"cnt":        bson.M{"$sum": 1},
+			"severities": bson.M{"$push": "$severity"},
+		}}},
+		{{Key: "$sort", Value: bson.M{"cnt": -1}}},
+		{{Key: "$limit", Value: 9}},
+	}
+
+	cur, err := s.incidents().Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
+
+	var rows []struct {
+		IP         string   `bson:"_id"`
+		Count      int      `bson:"cnt"`
+		Severities []string `bson:"severities"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
 
 	var nodes []*AttackMapNode
-	for rows.Next() {
-		var ip, topSeverity string
-		var count int
-		if err := rows.Scan(&ip, &count, &topSeverity); err != nil {
-			return nil, err
-		}
+	for _, r := range rows {
 		kind := "ip"
-		if strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "172.16.") {
+		if strings.HasPrefix(r.IP, "10.") || strings.HasPrefix(r.IP, "172.16.") {
 			kind = "asset"
 		}
 		nodes = append(nodes, &AttackMapNode{
-			ID:            ip,
-			Label:         ip,
+			ID:            r.IP,
+			Label:         r.IP,
 			Kind:          kind,
-			IncidentCount: count,
-			Severity:      topSeverity,
+			IncidentCount: r.Count,
+			Severity:      topSeverity(r.Severities),
 		})
 	}
 	return nodes, nil
+}
+
+// topSeverity returns the highest-ranked severity from a list.
+func topSeverity(severities []string) string {
+	rank := map[string]int{"critical": 4, "high": 3, "medium": 2, "low": 1}
+	best := ""
+	bestRank := 0
+	for _, sev := range severities {
+		if rank[sev] > bestRank {
+			bestRank = rank[sev]
+			best = sev
+		}
+	}
+	return best
 }

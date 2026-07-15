@@ -2,78 +2,77 @@ package remoteagent
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	db  *pgxpool.Pool
+	db  *mongo.Database
 	log *zap.Logger
 }
 
-func NewService(db *pgxpool.Pool, log *zap.Logger) *Service {
+func NewService(db *mongo.Database, log *zap.Logger) *Service {
 	return &Service{db: db, log: log}
 }
 
+func (s *Service) agents() *mongo.Collection   { return s.db.Collection("remote_agents") }
+func (s *Service) commands() *mongo.Collection { return s.db.Collection("agent_commands") }
+
 func (s *Service) ListAgents(ctx context.Context) ([]*RemoteAgent, error) {
-	rows, err := s.db.Query(ctx, "SELECT id, name, status, version, last_heartbeat, public_key, created_at FROM remote_agents ORDER BY name")
+	cur, err := s.agents().Find(ctx, bson.M{}, options.Find().SetSort(bson.D{{Key: "name", Value: 1}}))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
 	var list []*RemoteAgent
-	for rows.Next() {
-		a := &RemoteAgent{}
-		err = rows.Scan(&a.ID, &a.Name, &a.Status, &a.Version, &a.LastHeartbeat, &a.PublicKey, &a.CreatedAt)
-		if err != nil {
-			return nil, err
-		}
-		list = append(list, a)
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
 	}
 	return list, nil
 }
 
 func (s *Service) GetAgent(ctx context.Context, id string) (*RemoteAgent, error) {
 	a := &RemoteAgent{}
-	err := s.db.QueryRow(ctx,
-		`SELECT id, name, status, version, last_heartbeat, public_key, created_at 
-		 FROM remote_agents WHERE id = $1`, id,
-	).Scan(&a.ID, &a.Name, &a.Status, &a.Version, &a.LastHeartbeat, &a.PublicKey, &a.CreatedAt)
-	return a, err
+	if err := s.agents().FindOne(ctx, bson.M{"_id": id}).Decode(a); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 func (s *Service) CreateCommand(ctx context.Context, agentID, command, userID string) (*AgentCommand, error) {
-	id := uuid.New().String()
-	c := &AgentCommand{}
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO agent_commands (id, agent_id, command, status, issued_by)
-		 VALUES ($1, $2, $3, 'pending', $4)
-		 RETURNING id, agent_id, command, status, issued_by, created_at, updated_at`,
-		id, agentID, command, userID,
-	).Scan(&c.ID, &c.AgentID, &c.Command, &c.Status, &c.IssuedBy, &c.CreatedAt, &c.UpdatedAt)
-	return c, err
+	now := time.Now()
+	c := &AgentCommand{
+		ID:        uuid.New().String(),
+		AgentID:   agentID,
+		Command:   command,
+		Status:    "pending",
+		IssuedBy:  userID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if _, err := s.commands().InsertOne(ctx, c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func (s *Service) ListCommands(ctx context.Context, agentID string) ([]*AgentCommand, error) {
-	rows, err := s.db.Query(ctx,
-		`SELECT id, agent_id, command, status, issued_by, created_at, updated_at 
-		 FROM agent_commands WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 50`, agentID)
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}}).SetLimit(50)
+	cur, err := s.commands().Find(ctx, bson.M{"agent_id": agentID}, opts)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer cur.Close(ctx)
 
 	var list []*AgentCommand
-	for rows.Next() {
-		c := &AgentCommand{}
-		err = rows.Scan(&c.ID, &c.AgentID, &c.Command, &c.Status, &c.IssuedBy, &c.CreatedAt, &c.UpdatedAt)
-		if err != nil {
-			return nil, err
-		}
-		list = append(list, c)
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
 	}
 	return list, nil
 }
