@@ -209,6 +209,7 @@ func main() {
 		// Monitoring
 		v1Auth.GET("/monitoring/metrics", monitoringHandler.GetMetrics)
 		v1Auth.GET("/monitoring/services", monitoringHandler.GetServices)
+		v1Auth.GET("/monitoring/data-sources", monitoringHandler.GetDataSources)
 
 		// Remote Agents
 		v1Auth.GET("/agents", agentHandler.ListAgents)

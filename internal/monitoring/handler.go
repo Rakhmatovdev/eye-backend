@@ -23,3 +23,7 @@ func (h *Handler) GetServices(c *gin.Context) {
 	services := h.svc.GetServiceStatus()
 	errors.OK(c, services)
 }
+
+func (h *Handler) GetDataSources(c *gin.Context) {
+	errors.OK(c, h.svc.GetDataSources())
+}

@@ -47,6 +47,9 @@ func Run(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
 	if err := seedMilitary(ctx, db, log); err != nil {
 		return err
 	}
+	if err := seedAgents(ctx, db, log); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -452,6 +455,49 @@ func seedMilitary(ctx context.Context, db *mongo.Database, log *zap.Logger) erro
 		return err
 	}
 	log.Info("seeded military COP", zap.Int("units", len(units)), zap.Int("threats", len(threats)), zap.Int("missions", len(missions)))
+	return nil
+}
+
+// seedAgents inserts remote collection agents + a little command history so the
+// admin Remote Agents page shows real data. Idempotent (only when empty).
+func seedAgents(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	col := db.Collection("remote_agents")
+	if n, _ := col.CountDocuments(ctx, bson.M{}); n > 0 {
+		return nil
+	}
+	now := time.Now()
+	hb := func(d time.Duration) *time.Time { t := now.Add(-d); return &t }
+	agent := func(id, name, status, version string, last *time.Time) bson.M {
+		return bson.M{"_id": id, "name": name, "status": status, "version": version,
+			"last_heartbeat": last, "public_key": "ed25519:" + id + "-pubkey", "created_at": now.Add(-30 * 24 * time.Hour)}
+	}
+	agents := []interface{}{
+		agent("agt-001", "edge-collector-tashkent-01", "online", "2.4.1", hb(12*time.Second)),
+		agent("agt-002", "ingest-worker-almaty-03", "online", "2.4.1", hb(30*time.Second)),
+		agent("agt-003", "sensor-gateway-fergana", "degraded", "2.3.8", hb(9*time.Minute)),
+		agent("agt-004", "sigint-relay-dushanbe", "online", "2.4.0", hb(5*time.Second)),
+		agent("agt-005", "edge-collector-samarkand-02", "offline", "2.3.5", hb(6*time.Hour)),
+		agent("agt-006", "border-node-termez", "online", "2.4.1", hb(48*time.Second)),
+	}
+	if _, err := col.InsertMany(ctx, agents); err != nil {
+		return err
+	}
+
+	ccol := db.Collection("agent_commands")
+	cmd := func(id, agentID, command, status, by string, ago time.Duration) bson.M {
+		return bson.M{"_id": id, "agent_id": agentID, "command": command, "status": status,
+			"issued_by": by, "created_at": now.Add(-ago), "updated_at": now.Add(-ago + time.Minute)}
+	}
+	commands := []interface{}{
+		cmd("cmd-001", "agt-001", "collect", "executed", "admin@platform.io", 2*time.Hour),
+		cmd("cmd-002", "agt-003", "update", "failed", "admin@platform.io", 40*time.Minute),
+		cmd("cmd-003", "agt-004", "restart", "executed", "admin@platform.io", 3*time.Hour),
+		cmd("cmd-004", "agt-002", "collect", "pending", "admin@platform.io", 3*time.Minute),
+	}
+	if _, err := ccol.InsertMany(ctx, commands); err != nil {
+		return err
+	}
+	log.Info("seeded remote agents + commands", zap.Int("agents", len(agents)), zap.Int("commands", len(commands)))
 	return nil
 }
 
