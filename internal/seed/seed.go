@@ -35,6 +35,18 @@ func Run(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
 	if err := seedRBAC(ctx, db, log); err != nil {
 		return err
 	}
+	if err := seedEntities(ctx, db, log); err != nil {
+		return err
+	}
+	if err := seedEvents(ctx, db, log); err != nil {
+		return err
+	}
+	if err := seedSensors(ctx, db, log); err != nil {
+		return err
+	}
+	if err := seedMilitary(ctx, db, log); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -255,5 +267,241 @@ func seedBlocklist(ctx context.Context, db *mongo.Database, log *zap.Logger) err
 		return err
 	}
 	log.Info("seeded blocklist", zap.Int("count", len(docs)))
+	return nil
+}
+
+// seedEntities inserts a small intelligence graph with geo coordinates in each
+// entity's free-form `properties` (lat/lng). This powers Search, the Graph view
+// and — because the coordinates are present — the Geospatial Map. A handful of
+// relationships are added so /graph/expand returns edges. Idempotent (only when
+// the collection is empty).
+func seedEntities(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	col := db.Collection("entities")
+	now := time.Now()
+	ent := func(id, typ, class string, props bson.M) bson.M {
+		return bson.M{"_id": id, "type": typ, "classification": class, "properties": props,
+			"source_id": "seed", "created_at": now, "updated_at": now}
+	}
+	docs := []interface{}{
+		ent("ent-001", "person", "confidential", bson.M{"name": "Alisher Karimov", "lat": 41.2995, "lng": 69.2401, "address": "Tashkent, Uzbekistan", "nationality": "Uzbekistani", "risk_score": 78, "tags": "target,financial-crime"}),
+		ent("ent-002", "person", "secret", bson.M{"name": "Zhang Wei", "lat": 43.2220, "lng": 76.8512, "address": "Almaty, Kazakhstan", "nationality": "Chinese", "risk_score": 91, "tags": "foreign-national,high-value"}),
+		ent("ent-003", "person", "confidential", bson.M{"name": "Rustam Nazarov", "lat": 39.6542, "lng": 66.9597, "address": "Samarkand, Uzbekistan", "nationality": "Uzbekistani", "risk_score": 62, "tags": "informant,logistics"}),
+		ent("ent-005", "person", "confidential", bson.M{"name": "Bekzod Toshmatov", "lat": 40.7841, "lng": 72.3417, "address": "Fergana, Uzbekistan", "nationality": "Uzbekistani", "risk_score": 55, "tags": "border-crossing,smuggling"}),
+		ent("ent-007", "person", "secret", bson.M{"name": "Sergei Volkov", "lat": 42.3417, "lng": 69.5901, "address": "Shymkent, Kazakhstan", "nationality": "Russian", "risk_score": 85, "tags": "organized-crime"}),
+		ent("ent-009", "person", "secret", bson.M{"name": "Timur Umarov", "lat": 38.5598, "lng": 68.7739, "address": "Dushanbe, Tajikistan", "nationality": "Tajik", "risk_score": 93, "tags": "target,narcotics,high-priority"}),
+		ent("ent-011", "person", "secret", bson.M{"name": "Hassan Al-Rashidi", "lat": 41.2850, "lng": 69.2100, "address": "Tashkent, Uzbekistan", "nationality": "UAE", "risk_score": 88, "tags": "terrorism-finance,high-value"}),
+		ent("ent-013", "organization", "confidential", bson.M{"name": "Silk Road Trading LLC", "lat": 41.3200, "lng": 69.2600, "address": "Tashkent, Uzbekistan", "risk_score": 74, "tags": "shell-company,import-export"}),
+		ent("ent-014", "organization", "secret", bson.M{"name": "Dragon Capital Investment", "lat": 43.2220, "lng": 76.8512, "address": "Almaty, Kazakhstan", "risk_score": 89, "tags": "foreign-entity,prc-linked"}),
+		ent("ent-018", "organization", "secret", bson.M{"name": "Gulf Horizon Investments", "lat": 25.2048, "lng": 55.2708, "address": "Dubai, UAE", "risk_score": 82, "tags": "uae-linked,terrorism-finance"}),
+		ent("ent-019", "organization", "confidential", bson.M{"name": "CryptoAsia Exchange", "lat": 42.8746, "lng": 74.5698, "address": "Bishkek, Kyrgyzstan", "risk_score": 71, "tags": "cryptocurrency,money-laundering"}),
+		ent("ent-025", "location", "public", bson.M{"name": "Tashkent International Airport", "lat": 41.2579, "lng": 69.2812, "address": "Tashkent, Uzbekistan", "tags": "border-control,transit"}),
+		ent("ent-027", "location", "confidential", bson.M{"name": "Dostuk Border Crossing", "lat": 40.7700, "lng": 72.8000, "address": "UZ-KG border", "tags": "border,crossing"}),
+		ent("ent-052", "location", "confidential", bson.M{"name": "Termez Rail Terminal", "lat": 37.2242, "lng": 67.2783, "address": "Termez, Uzbekistan", "tags": "border,rail,cargo-transit"}),
+	}
+	// Upsert by _id so the curated geo entities always exist even if other
+	// (manually created) entities are already present in the collection.
+	if err := upsertByID(ctx, col, docs); err != nil {
+		return err
+	}
+
+	rel := func(from, to, typ string) bson.M {
+		return bson.M{"_id": "rel-" + from + "-" + to, "entity_id_from": from, "entity_id_to": to,
+			"type": typ, "properties": bson.M{"label": typ}, "created_at": now}
+	}
+	rels := []interface{}{
+		rel("ent-001", "ent-013", "director_of"),
+		rel("ent-002", "ent-014", "director_of"),
+		rel("ent-013", "ent-014", "subsidiary_of"),
+		rel("ent-001", "ent-002", "associate"),
+		rel("ent-003", "ent-001", "associate"),
+		rel("ent-011", "ent-018", "director_of"),
+		rel("ent-009", "ent-019", "uses"),
+		rel("ent-005", "ent-027", "crossed"),
+	}
+	if err := upsertByID(ctx, db.Collection("relationships"), rels); err != nil {
+		return err
+	}
+	log.Info("seeded entities + relationships", zap.Int("entities", len(docs)), zap.Int("relationships", len(rels)))
+	return nil
+}
+
+// seedSensors inserts a synthetic surveillance sensor network (cameras, drones,
+// radar, SIGINT collectors) plus detections that identify seeded entities — the
+// "which sensor saw whom, where, when" feed that powers person-finding. All data
+// is fictional demo data. Idempotent (only when empty).
+func seedSensors(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	col := db.Collection("sensors")
+	if n, _ := col.CountDocuments(ctx, bson.M{}); n > 0 {
+		return nil
+	}
+	now := time.Now()
+	sen := func(id, name, typ, status string, lat, lng float64, area string, radius int, res, class string) bson.M {
+		return bson.M{"_id": id, "name": name, "type": typ, "status": status, "lat": lat, "lng": lng,
+			"area": area, "coverage_radius": radius, "resolution": res, "classification": class,
+			"feed_url": "sim://" + id, "last_heartbeat": now.Add(-time.Duration(radius%7) * time.Minute), "created_at": now}
+	}
+	sensors := []interface{}{
+		sen("cam-001", "TAS Airport — Terminal Cam A", "camera", "online", 41.2579, 69.2812, "Tashkent Intl Airport", 300, "4K", "confidential"),
+		sen("cam-002", "TAS Airport — Passport Control", "camera", "online", 41.2585, 69.2805, "Tashkent Intl Airport", 150, "4K", "secret"),
+		sen("cam-003", "Dostuk Border — Lane 3 ANPR", "camera", "online", 40.7700, 69.2900, "Dostuk Border Crossing", 120, "1080p ANPR", "confidential"),
+		sen("cam-004", "Yunusabad — Silk Road Office", "camera", "degraded", 41.3200, 69.2600, "Tashkent — Yunusabad", 80, "1080p", "secret"),
+		sen("cam-005", "Almaty BC — Dragon Capital Lobby", "camera", "online", 43.2220, 76.8512, "Almaty Business Center", 60, "1080p", "secret"),
+		sen("cam-006", "Samarkand — Registon Sq.", "camera", "online", 39.6542, 66.9597, "Samarkand", 200, "4K", "internal"),
+		sen("cam-007", "Termez Rail — Gate 2", "camera", "offline", 37.2242, 67.2783, "Termez Rail Terminal", 180, "1080p", "confidential"),
+		sen("drn-001", "UAV Reaper-7 (patrol)", "drone", "online", 40.7841, 72.3417, "Fergana Valley", 5000, "EO/IR gimbal", "secret"),
+		sen("drn-002", "UAV Shadow-3 (loiter)", "drone", "online", 38.5598, 68.7739, "Dushanbe approach", 4000, "EO/IR gimbal", "secret"),
+		sen("rad-001", "Border Radar North", "radar", "online", 42.3417, 69.5901, "Shymkent sector", 30000, "S-band", "confidential"),
+		sen("sig-001", "SIGINT Collector Alpha", "sigint", "online", 41.2995, 69.2401, "Tashkent metro", 15000, "COMINT", "secret"),
+		sen("sig-002", "SIGINT Collector Bravo", "sigint", "degraded", 42.8746, 74.5698, "Bishkek", 12000, "COMINT", "secret"),
+	}
+	if _, err := col.InsertMany(ctx, sensors); err != nil {
+		return err
+	}
+
+	dcol := db.Collection("detections")
+	det := func(id, sensorID, sensorName, entityID, entityName, kind string, conf, lat, lng float64, area string, ago time.Duration) bson.M {
+		return bson.M{"_id": id, "sensor_id": sensorID, "sensor_name": sensorName, "entity_id": entityID,
+			"entity_name": entityName, "kind": kind, "confidence": conf, "lat": lat, "lng": lng,
+			"area": area, "timestamp": now.Add(-ago)}
+	}
+	detections := []interface{}{
+		det("det-001", "cam-002", "TAS Airport — Passport Control", "ent-001", "Alisher Karimov", "face_match", 0.96, 41.2585, 69.2805, "Tashkent Intl Airport", 2*time.Hour),
+		det("det-002", "cam-001", "TAS Airport — Terminal Cam A", "ent-011", "Hassan Al-Rashidi", "face_match", 0.91, 41.2579, 69.2812, "Tashkent Intl Airport", 5*time.Hour),
+		det("det-003", "cam-003", "Dostuk Border — Lane 3 ANPR", "ent-005", "Bekzod Toshmatov", "plate_match", 0.99, 40.7700, 69.2900, "Dostuk Border Crossing", 8*time.Hour),
+		det("det-004", "cam-005", "Almaty BC — Dragon Capital Lobby", "ent-002", "Zhang Wei", "face_match", 0.88, 43.2220, 76.8512, "Almaty Business Center", 11*time.Hour),
+		det("det-005", "sig-001", "SIGINT Collector Alpha", "ent-001", "Alisher Karimov", "signal", 0.82, 41.2995, 69.2401, "Tashkent metro", 13*time.Hour),
+		det("det-006", "cam-004", "Yunusabad — Silk Road Office", "ent-001", "Alisher Karimov", "face_match", 0.79, 41.3200, 69.2600, "Tashkent — Yunusabad", 20*time.Hour),
+		det("det-007", "drn-002", "UAV Shadow-3 (loiter)", "ent-009", "Timur Umarov", "thermal", 0.71, 38.5598, 68.7739, "Dushanbe approach", 26*time.Hour),
+		det("det-008", "cam-006", "Samarkand — Registon Sq.", "ent-003", "Rustam Nazarov", "face_match", 0.85, 39.6542, 66.9597, "Samarkand", 30*time.Hour),
+		det("det-009", "sig-002", "SIGINT Collector Bravo", "ent-019", "CryptoAsia Exchange", "signal", 0.68, 42.8746, 74.5698, "Bishkek", 34*time.Hour),
+		det("det-010", "drn-001", "UAV Reaper-7 (patrol)", "ent-005", "Bekzod Toshmatov", "thermal", 0.64, 40.7841, 72.3417, "Fergana Valley", 40*time.Hour),
+		det("det-011", "cam-003", "Dostuk Border — Lane 3 ANPR", "", "Unidentified vehicle", "plate_match", 0.55, 40.7700, 69.2900, "Dostuk Border Crossing", 3*time.Hour),
+		det("det-012", "cam-002", "TAS Airport — Passport Control", "ent-007", "Sergei Volkov", "face_match", 0.93, 41.2585, 69.2805, "Tashkent Intl Airport", 46*time.Hour),
+		det("det-013", "rad-001", "Border Radar North", "", "Unattributed track", "motion", 0.60, 42.3417, 69.5901, "Shymkent sector", 1*time.Hour),
+		det("det-014", "cam-005", "Almaty BC — Dragon Capital Lobby", "ent-002", "Zhang Wei", "face_match", 0.90, 43.2220, 76.8512, "Almaty Business Center", 52*time.Hour),
+		det("det-015", "sig-001", "SIGINT Collector Alpha", "ent-011", "Hassan Al-Rashidi", "signal", 0.77, 41.2850, 69.2100, "Tashkent metro", 6*time.Hour),
+		det("det-016", "drn-002", "UAV Shadow-3 (loiter)", "ent-009", "Timur Umarov", "thermal", 0.74, 38.5598, 68.7739, "Dushanbe approach", 15*time.Hour),
+	}
+	if _, err := dcol.InsertMany(ctx, detections); err != nil {
+		return err
+	}
+	log.Info("seeded sensors + detections", zap.Int("sensors", len(sensors)), zap.Int("detections", len(detections)))
+	return nil
+}
+
+// seedMilitary inserts a synthetic Common Operating Picture: friendly units,
+// hostile/suspect/unknown threat tracks, and an operations board — all fictional
+// demo data for the tactical command view. Idempotent (only when empty).
+func seedMilitary(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	ucol := db.Collection("mil_units")
+	if n, _ := ucol.CountDocuments(ctx, bson.M{}); n > 0 {
+		return nil
+	}
+	now := time.Now()
+	unit := func(id, cs, name, typ, domain, status, readiness string, lat, lng float64, strength, heading int, speed float64) bson.M {
+		return bson.M{"_id": id, "callsign": cs, "name": name, "type": typ, "domain": domain,
+			"status": status, "readiness": readiness, "lat": lat, "lng": lng, "strength": strength,
+			"heading": heading, "speed": speed, "updated_at": now}
+	}
+	units := []interface{}{
+		unit("u-001", "EAGLE-6", "Task Force HQ", "hq", "land", "active", "green", 41.3111, 69.2797, 45, 0, 0),
+		unit("u-002", "STEEL-1", "1st Armored Coy", "armor", "land", "moving", "green", 40.9000, 71.7500, 120, 210, 32),
+		unit("u-003", "VIPER-2", "Recon Platoon", "recon", "land", "active", "amber", 40.7900, 72.3500, 28, 95, 18),
+		unit("u-004", "GHOST-9", "SOF Detachment", "infantry", "land", "engaged", "green", 38.6000, 68.8000, 16, 140, 6),
+		unit("u-005", "HAWK-1", "UAV Sqn (Reaper)", "uav", "air", "active", "green", 40.7841, 72.3417, 3, 270, 240),
+		unit("u-006", "FALCON-3", "CAS Flight", "air", "air", "standby", "amber", 41.2600, 69.2000, 2, 0, 0),
+		unit("u-007", "ANVIL-4", "Artillery Battery", "logistics", "land", "active", "green", 40.8500, 71.9000, 60, 0, 0),
+		unit("u-008", "SHIELD-7", "Border QRF", "infantry", "land", "standby", "green", 40.7700, 72.8000, 40, 0, 0),
+	}
+	if _, err := ucol.InsertMany(ctx, units); err != nil {
+		return err
+	}
+
+	tcol := db.Collection("mil_threats")
+	threat := func(id, desig, typ, class, level string, lat, lng float64, heading int, speed, conf float64, entityID string, ago time.Duration) bson.M {
+		return bson.M{"_id": id, "designation": desig, "type": typ, "classification": class,
+			"threat_level": level, "lat": lat, "lng": lng, "heading": heading, "speed": speed,
+			"confidence": conf, "entity_id": entityID, "last_seen": now.Add(-ago)}
+	}
+	threats := []interface{}{
+		threat("t-001", "HOSTILE-01 (convoy)", "convoy", "hostile", "critical", 38.9700, 70.1839, 300, 45, 0.88, "ent-009", 12*time.Minute),
+		threat("t-002", "SUSPECT-04 (UAV)", "uav", "suspect", "high", 40.7500, 72.6000, 250, 120, 0.72, "", 5*time.Minute),
+		threat("t-003", "HOSTILE-02 (armor)", "armor", "hostile", "high", 39.0500, 70.3000, 290, 25, 0.81, "", 20*time.Minute),
+		threat("t-004", "UNKNOWN-07 (track)", "unknown", "unknown", "medium", 42.3000, 69.6000, 180, 60, 0.55, "", 3*time.Minute),
+		threat("t-005", "SUSPECT-09 (convoy)", "convoy", "suspect", "medium", 37.3000, 67.4000, 20, 40, 0.63, "ent-005", 40*time.Minute),
+		threat("t-006", "HOSTILE-03 (arty)", "artillery", "hostile", "critical", 38.8000, 69.9000, 0, 0, 0.79, "", 8*time.Minute),
+	}
+	if _, err := tcol.InsertMany(ctx, threats); err != nil {
+		return err
+	}
+
+	mcol := db.Collection("mil_missions")
+	mission := func(id, name, status, prio, obj, area string, unitsList []string, progress int, startsAgo time.Duration) bson.M {
+		return bson.M{"_id": id, "name": name, "status": status, "priority": prio, "objective": obj,
+			"area": area, "assigned_units": unitsList, "progress": progress,
+			"starts_at": now.Add(-startsAgo), "updated_at": now}
+	}
+	missions := []interface{}{
+		mission("m-001", "OP SILK SENTINEL", "active", "immediate", "Interdict HOSTILE-01 narcotics convoy before border crossing.", "Dushanbe–Termez corridor", []string{"u-004", "u-005"}, 65, 6*time.Hour),
+		mission("m-002", "OP IRON GATE", "active", "priority", "Screen Fergana valley approaches; maintain COP on suspect UAV activity.", "Fergana Valley", []string{"u-002", "u-003", "u-007"}, 40, 10*time.Hour),
+		mission("m-003", "OP NIGHT LEDGER", "planning", "priority", "Prepare cordon-and-search of Silk Road Trading premises pending warrant.", "Tashkent — Yunusabad", []string{"u-001", "u-008"}, 15, 2*time.Hour),
+		mission("m-004", "OP CLEAR SKY", "on_hold", "routine", "CAS on-call posture for QRF tasking.", "Tashkent sector", []string{"u-006"}, 0, 1*time.Hour),
+		mission("m-005", "OP RIVER WATCH", "complete", "routine", "Prior surveillance sweep of Termez rail terminal — complete.", "Termez Rail Terminal", []string{"u-008"}, 100, 48*time.Hour),
+	}
+	if _, err := mcol.InsertMany(ctx, missions); err != nil {
+		return err
+	}
+	log.Info("seeded military COP", zap.Int("units", len(units)), zap.Int("threats", len(threats)), zap.Int("missions", len(missions)))
+	return nil
+}
+
+// upsertByID upserts each bson.M doc (which must carry an `_id`) by its id using
+// $setOnInsert, so re-running seed neither duplicates nor overwrites edits.
+func upsertByID(ctx context.Context, col *mongo.Collection, docs []interface{}) error {
+	for _, d := range docs {
+		doc := d.(bson.M)
+		id := doc["_id"]
+		if _, err := col.UpdateOne(ctx,
+			bson.M{"_id": id},
+			bson.M{"$setOnInsert": doc},
+			options.Update().SetUpsert(true),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedEvents inserts time-stamped events for the Timeline / Time Analysis view.
+// entity_id values reference the seeded entities. Timestamps are relative to now
+// so the timeline reads as recent activity. Idempotent (only when empty).
+func seedEvents(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	col := db.Collection("events")
+	if n, _ := col.CountDocuments(ctx, bson.M{}); n > 0 {
+		return nil
+	}
+	now := time.Now()
+	ev := func(id, entityID, typ, title, desc, loc string, ago time.Duration) bson.M {
+		return bson.M{"_id": id, "entity_id": entityID, "type": typ, "title": title,
+			"description": desc, "location": loc, "timestamp": now.Add(-ago), "created_at": now}
+	}
+	docs := []interface{}{
+		ev("ev-001", "ent-001", "travel", "Departed Tashkent Airport", "Crossed border on flight UZ-204 to Almaty.", "Tashkent, UZ", 30*24*time.Hour),
+		ev("ev-002", "ent-001", "travel", "Arrived Almaty Airport", "Border check and visa scan cleared.", "Almaty, KZ", 30*24*time.Hour-3*time.Hour),
+		ev("ev-003", "ent-013", "financial", "Suspicious Wire Transfer", "SWIFT transfer of $480,000 to Dragon Capital Investment.", "Tashkent, UZ", 26*24*time.Hour),
+		ev("ev-004", "ent-005", "telecom", "SIM Handshake Registered", "SIM +998951234567 active on cell tower near Dostuk crossing.", "Fergana, UZ", 22*24*time.Hour),
+		ev("ev-005", "ent-001", "meeting", "Physical Meeting Observed", "Surveillance reports a meeting between Karimov and Zhang Wei.", "Almaty, KZ", 20*24*time.Hour),
+		ev("ev-006", "ent-009", "financial", "Hawala Transfer Flagged", "$150,000-equivalent informal value transfer toward an Afghan entity.", "Dushanbe, TJ", 16*24*time.Hour),
+		ev("ev-007", "ent-002", "travel", "Roaming Detected", "Device roamed across UZ, KZ, KG within 48 hours.", "Almaty, KZ", 14*24*time.Hour),
+		ev("ev-008", "ent-019", "financial", "Crypto Transfer", "12.4 BTC (~$840k) routed through CryptoAsia Exchange; mixing detected.", "Bishkek, KG", 11*24*time.Hour),
+		ev("ev-009", "ent-011", "travel", "Repeat Visitor Alert", "8th recorded visit to Tashkent this year.", "Tashkent, UZ", 7*24*time.Hour),
+		ev("ev-010", "ent-005", "border", "Border Crossing", "Vehicle 01A123BC crossed at Dostuk checkpoint.", "Dostuk, UZ-KG", 4*24*time.Hour),
+		ev("ev-011", "ent-052", "cargo", "Flagged Rail Shipment", "Container manifest mismatch on the Termez–Afghan corridor.", "Termez, UZ", 2*24*time.Hour),
+		ev("ev-012", "ent-001", "meeting", "Encrypted Call Intercept", "Signal intercept: discussion of 'shipment' arrival and crypto payment.", "Tashkent, UZ", 18*time.Hour),
+	}
+	if _, err := col.InsertMany(ctx, docs); err != nil {
+		return err
+	}
+	log.Info("seeded timeline events", zap.Int("count", len(docs)))
 	return nil
 }

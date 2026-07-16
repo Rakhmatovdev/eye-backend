@@ -13,11 +13,14 @@ import (
 	"intelligence-platform/internal/auth"
 	"intelligence-platform/internal/cases"
 	"intelligence-platform/internal/entities"
+	"intelligence-platform/internal/events"
+	"intelligence-platform/internal/military"
 	"intelligence-platform/internal/monitoring"
 	"intelligence-platform/internal/realtime"
 	"intelligence-platform/internal/remoteagent"
 	"intelligence-platform/internal/security"
 	"intelligence-platform/internal/seed"
+	"intelligence-platform/internal/sensors"
 	"intelligence-platform/internal/users"
 	"intelligence-platform/pkg/config"
 	"intelligence-platform/pkg/database"
@@ -67,14 +70,18 @@ func main() {
 	usersSvc := users.NewService(db, log)
 	auditSvc := audit.NewService(db, log)
 	entitiesSvc := entities.NewService(db, log)
+	eventsSvc := events.NewService(db, log)
 	casesSvc := cases.NewService(db, log)
 	securitySvc := security.NewService(db, log)
+	sensorsSvc := sensors.NewService(db, log)
+	militarySvc := military.NewService(db, log)
 	monitoringSvc := monitoring.NewService()
 	agentSvc := remoteagent.NewService(db, log)
 
 	// 5. Init Hub & WebSocket
 	wsHub := realtime.NewHub(log)
 	go wsHub.Run()
+	go realtime.StartBroadcaster(wsHub)
 
 	// 6. Init Handlers
 	authHandler := auth.NewHandler(authSvc, auditSvc)
@@ -82,8 +89,11 @@ func main() {
 	rbacHandler := accesscontrol.NewHandler(rbacSvc)
 	auditHandler := audit.NewHandler(auditSvc)
 	entitiesHandler := entities.NewHandler(entitiesSvc)
+	eventsHandler := events.NewHandler(eventsSvc)
 	casesHandler := cases.NewHandler(casesSvc)
 	securityHandler := security.NewHandler(securitySvc)
+	sensorsHandler := sensors.NewHandler(sensorsSvc)
+	militaryHandler := military.NewHandler(militarySvc)
 	monitoringHandler := monitoring.NewHandler(monitoringSvc)
 	agentHandler := remoteagent.NewHandler(agentSvc)
 
@@ -145,6 +155,35 @@ func main() {
 		v1Auth.POST("/entities/relationship", entitiesHandler.CreateRelationship)
 		v1Auth.POST("/graph/expand", entitiesHandler.Expand)
 		v1Auth.POST("/graph/path", entitiesHandler.FindPath)
+
+		// Timeline (Time Analysis) — time-stamped events tied to entities
+		v1Auth.GET("/timeline", eventsHandler.List)
+		v1Auth.POST("/timeline", eventsHandler.Create)
+
+		// Surveillance sensor/camera network (static routes before :id)
+		v1Auth.GET("/sensors/detections", sensorsHandler.Detections)
+		v1Auth.GET("/sensors/stats", sensorsHandler.Stats)
+		v1Auth.GET("/sensors", sensorsHandler.List)
+		v1Auth.GET("/sensors/:id", sensorsHandler.Get)
+		v1Auth.POST("/sensors", userAdminMW, sensorsHandler.Create)
+		v1Auth.PUT("/sensors/:id", userAdminMW, sensorsHandler.Update)
+		v1Auth.DELETE("/sensors/:id", userAdminMW, sensorsHandler.Delete)
+
+		// Military COP (Common Operating Picture)
+		v1Auth.GET("/military/units", militaryHandler.Units)
+		v1Auth.GET("/military/threats", militaryHandler.Threats)
+		v1Auth.GET("/military/missions", militaryHandler.Missions)
+		v1Auth.GET("/military/stats", militaryHandler.Stats)
+		// Admin management (CRUD)
+		v1Auth.POST("/military/units", userAdminMW, militaryHandler.CreateUnit)
+		v1Auth.PUT("/military/units/:id", userAdminMW, militaryHandler.UpdateUnit)
+		v1Auth.DELETE("/military/units/:id", userAdminMW, militaryHandler.DeleteUnit)
+		v1Auth.POST("/military/threats", userAdminMW, militaryHandler.CreateThreat)
+		v1Auth.PUT("/military/threats/:id", userAdminMW, militaryHandler.UpdateThreat)
+		v1Auth.DELETE("/military/threats/:id", userAdminMW, militaryHandler.DeleteThreat)
+		v1Auth.POST("/military/missions", userAdminMW, militaryHandler.CreateMission)
+		v1Auth.PUT("/military/missions/:id", userAdminMW, militaryHandler.UpdateMission)
+		v1Auth.DELETE("/military/missions/:id", userAdminMW, militaryHandler.DeleteMission)
 
 		// Cases
 		v1Auth.GET("/cases", casesHandler.List)

@@ -52,8 +52,9 @@ func (h *Handler) Create(c *gin.Context) {
 
 	user, err := h.svc.Create(c.Request.Context(), req)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
-			errors.Fail(c, errors.ErrConflict)
+		msg := err.Error()
+		if strings.Contains(msg, "duplicate") || strings.Contains(msg, "unique") || strings.Contains(msg, "already exists") {
+			errors.FailMsg(c, http.StatusConflict, "a user with this email already exists")
 			return
 		}
 		errors.FailMsg(c, http.StatusInternalServerError, "failed to create user")
