@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"intelligence-platform/internal/accesscontrol"
+	"intelligence-platform/internal/ai"
 	"intelligence-platform/internal/audit"
 	"intelligence-platform/internal/auth"
 	"intelligence-platform/internal/cases"
@@ -75,6 +76,13 @@ func main() {
 	securitySvc := security.NewService(db, log)
 	sensorsSvc := sensors.NewService(db, log)
 	militarySvc := military.NewService(db, log)
+	aiSvc := ai.NewService(db, log, ai.Config{
+		Provider:        cfg.AIProvider,
+		OllamaURL:       cfg.OllamaURL,
+		OllamaModel:     cfg.OllamaModel,
+		AnthropicAPIKey: cfg.AnthropicAPIKey,
+		AnthropicModel:  cfg.AnthropicModel,
+	})
 	monitoringSvc := monitoring.NewService()
 	agentSvc := remoteagent.NewService(db, log)
 
@@ -94,6 +102,7 @@ func main() {
 	securityHandler := security.NewHandler(securitySvc)
 	sensorsHandler := sensors.NewHandler(sensorsSvc)
 	militaryHandler := military.NewHandler(militarySvc)
+	aiHandler := ai.NewHandler(aiSvc)
 	monitoringHandler := monitoring.NewHandler(monitoringSvc)
 	agentHandler := remoteagent.NewHandler(agentSvc)
 
@@ -184,6 +193,9 @@ func main() {
 		v1Auth.POST("/military/missions", userAdminMW, militaryHandler.CreateMission)
 		v1Auth.PUT("/military/missions/:id", userAdminMW, militaryHandler.UpdateMission)
 		v1Auth.DELETE("/military/missions/:id", userAdminMW, militaryHandler.DeleteMission)
+
+		// AI analyst assistant (local Ollama / Claude / simulated)
+		v1Auth.POST("/ai/chat", aiHandler.Chat)
 
 		// Cases
 		v1Auth.GET("/cases", casesHandler.List)

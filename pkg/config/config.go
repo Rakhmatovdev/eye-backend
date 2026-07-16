@@ -16,6 +16,15 @@ type Config struct {
 	JWTRefreshSecret string   `mapstructure:"JWT_REFRESH_SECRET"`
 	CORSOrigins      []string `mapstructure:"CORS_ORIGINS"`
 	Environment      string   `mapstructure:"ENVIRONMENT"`
+
+	// AI assistant (multi-provider). Provider: auto | local | claude | off.
+	// "local" uses a local Ollama server (no API key needed); "claude" uses the
+	// Anthropic API; "auto" tries local, then claude, then a simulated fallback.
+	AIProvider      string `mapstructure:"AI_PROVIDER"`
+	OllamaURL       string `mapstructure:"OLLAMA_URL"`
+	OllamaModel     string `mapstructure:"OLLAMA_MODEL"`
+	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
+	AnthropicModel  string `mapstructure:"ANTHROPIC_MODEL"`
 }
 
 // Load reads configuration from .env file and environment variables.
@@ -31,6 +40,10 @@ func Load() (*Config, error) {
 	viper.SetDefault("MONGO_URI", "mongodb://localhost:27017")
 	viper.SetDefault("JWT_SECRET", "default-secret-change-in-production-32chars")
 	viper.SetDefault("JWT_REFRESH_SECRET", "default-refresh-secret-change-in-production-32chars")
+	viper.SetDefault("AI_PROVIDER", "auto")
+	viper.SetDefault("OLLAMA_URL", "http://localhost:11434")
+	viper.SetDefault("OLLAMA_MODEL", "llama3.2")
+	viper.SetDefault("ANTHROPIC_MODEL", "claude-opus-4-8")
 
 	if err := viper.ReadInConfig(); err != nil {
 		// Not fatal — env vars may be set directly
