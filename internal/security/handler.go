@@ -5,6 +5,7 @@ import (
 
 	"intelligence-platform/pkg/errors"
 	mw "intelligence-platform/pkg/middleware"
+	"intelligence-platform/pkg/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -33,10 +34,22 @@ func (h *Handler) GetDashboard(c *gin.Context) {
 	errors.OK(c, stats)
 }
 
+// ListIncidents godoc - GET /api/v1/security/incidents?page=&limit=
 func (h *Handler) ListIncidents(c *gin.Context) {
-	list, err := h.svc.ListIncidents(c.Request.Context())
+	pg, ok := pagination.Parse(c.Query("page"), c.Query("limit"))
+	var pgPtr *pagination.Params
+	if ok {
+		pgPtr = &pg
+	}
+
+	list, total, err := h.svc.ListIncidents(c.Request.Context(), pgPtr)
 	if err != nil {
 		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if ok {
+		errors.OKWithMeta(c, list, pg.ToMeta(total))
 		return
 	}
 	errors.OK(c, list)

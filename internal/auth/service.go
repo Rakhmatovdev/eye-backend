@@ -151,6 +151,40 @@ func (s *Service) GetMe(ctx context.Context, userID string) (*User, error) {
 	return s.getUserByID(ctx, userID)
 }
 
+// ChangePassword verifies the caller's current password, stores the new
+// (bcrypt-hashed) one, and revokes the user's refresh token so every other
+// session is forced to re-authenticate.
+func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, newPassword string) error {
+	user, err := s.getUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("user not found")
+	}
+
+	if !crypto.CheckPassword(currentPassword, user.PasswordHash) {
+		return fmt.Errorf("current password is incorrect")
+	}
+
+	if len(newPassword) < 8 {
+		return fmt.Errorf("new password must be at least 8 characters")
+	}
+
+	hash, err := crypto.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if _, err := s.users().UpdateByID(ctx, userID, bson.M{"$set": bson.M{"password_hash": hash}}); err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+
+	// Revoke refresh tokens so other sessions die.
+	if _, err := s.refreshTokens().DeleteOne(ctx, bson.M{"_id": userID}); err != nil {
+		s.log.Error("failed to revoke refresh token after password change", zap.Error(err))
+	}
+
+	return nil
+}
+
 // EnrollMFA generates a new TOTP secret for the user (not yet enabled — the
 // user must confirm with VerifyMFA) and returns the enrollment details.
 func (s *Service) EnrollMFA(ctx context.Context, userID string) (*MFAEnrollResponse, error) {

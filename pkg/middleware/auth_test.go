@@ -4,9 +4,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
+
+// signTestToken builds a signed JWT identical in shape to what auth.Service
+// issues, without pulling in the auth package (would be an import cycle).
+func signTestToken(t *testing.T, secret string, claims Claims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	s, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("failed to sign test token: %v", err)
+	}
+	return s
+}
 
 // TestRequireRole covers the actual RBAC gate used for every admin-only
 // ("🔒") route registered in cmd/api/main.go (userAdminMW := mw.RequireRole
@@ -83,4 +97,114 @@ func TestGetUserIDAndRole(t *testing.T) {
 	if role := GetUserRole(c); role != "analyst" {
 		t.Fatalf("expected analyst, got %q", role)
 	}
+}
+
+func TestParseToken(t *testing.T) {
+	const secret = "test-secret-at-least-32-characters-long"
+
+	t.Run("valid token", func(t *testing.T) {
+		claims := Claims{
+			UserID: "u1",
+			Email:  "u1@example.com",
+			Role:   "analyst",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+			},
+		}
+		tokenStr := signTestToken(t, secret, claims)
+
+		got, err := ParseToken(secret, tokenStr)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if got.UserID != "u1" || got.Role != "analyst" {
+			t.Fatalf("unexpected claims: %+v", got)
+		}
+	})
+
+	t.Run("wrong secret", func(t *testing.T) {
+		tokenStr := signTestToken(t, secret, Claims{UserID: "u1"})
+		if _, err := ParseToken("a-completely-different-secret-value", tokenStr); err == nil {
+			t.Fatal("expected error for token signed with a different secret")
+		}
+	})
+
+	t.Run("expired token", func(t *testing.T) {
+		claims := Claims{
+			UserID: "u1",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)),
+			},
+		}
+		tokenStr := signTestToken(t, secret, claims)
+		if _, err := ParseToken(secret, tokenStr); err == nil {
+			t.Fatal("expected error for expired token")
+		}
+	})
+
+	t.Run("garbage token", func(t *testing.T) {
+		if _, err := ParseToken(secret, "not-a-jwt"); err == nil {
+			t.Fatal("expected error for malformed token")
+		}
+	})
+}
+
+// TestWSAuth covers the /ws query-param auth gate (§ contract: WS
+// /ws?token=<access_token>, invalid/missing token -> 401 before upgrade).
+func TestWSAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const secret = "test-secret-at-least-32-characters-long"
+
+	t.Run("missing token rejected with 401", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/ws", nil)
+
+		WSAuth(secret)(c)
+
+		if !c.IsAborted() {
+			t.Fatal("expected context to be aborted when token is missing")
+		}
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid token rejected with 401", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/ws?token=garbage", nil)
+
+		WSAuth(secret)(c)
+
+		if !c.IsAborted() {
+			t.Fatal("expected context to be aborted for an invalid token")
+		}
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("valid token passes and sets context", func(t *testing.T) {
+		tokenStr := signTestToken(t, secret, Claims{
+			UserID: "u1",
+			Role:   "analyst",
+			RegisteredClaims: jwt.RegisteredClaims{
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+			},
+		})
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/ws?token="+tokenStr, nil)
+
+		WSAuth(secret)(c)
+
+		if c.IsAborted() {
+			t.Fatal("expected context not to be aborted for a valid token")
+		}
+		if GetUserID(c) != "u1" {
+			t.Fatalf("expected user id to be set on context, got %q", GetUserID(c))
+		}
+	})
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"intelligence-platform/pkg/pagination"
+
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -76,6 +78,41 @@ func (s *Service) Detections(ctx context.Context, sensorID, entityID string, lim
 		return nil, err
 	}
 	return list, nil
+}
+
+// DetectionsPaginated returns a single page of detections plus the total
+// match count, using true page/limit semantics with `meta` in the response.
+// It's a separate path from Detections (which keeps its pre-existing
+// `?limit=` "simple cap" behaviour used by the live feed) so that existing
+// callers passing a bare `?limit=` aren't silently reduced from the old
+// 500-item cap down to pagination.MaxLimit — pagination only activates when
+// the caller explicitly opts in with `?page=`.
+func (s *Service) DetectionsPaginated(ctx context.Context, sensorID, entityID string, pg pagination.Params) ([]*Detection, int64, error) {
+	filter := bson.M{}
+	if sensorID != "" {
+		filter["sensor_id"] = sensorID
+	}
+	if entityID != "" {
+		filter["entity_id"] = entityID
+	}
+
+	total, err := s.detections().CountDocuments(ctx, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	opts := options.Find().SetSort(bson.D{{Key: "timestamp", Value: -1}}).SetSkip(pg.Skip()).SetLimit(pg.Take())
+	cur, err := s.detections().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cur.Close(ctx)
+
+	list := []*Detection{}
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
 }
 
 func (s *Service) Create(ctx context.Context, in SensorInput) (*Sensor, error) {

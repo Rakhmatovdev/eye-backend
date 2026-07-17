@@ -100,6 +100,31 @@ func (h *Handler) Logout(c *gin.Context) {
 	errors.OK(c, gin.H{"message": "logged out successfully"})
 }
 
+// ChangePassword godoc
+// POST /api/v1/auth/change-password
+func (h *Handler) ChangePassword(c *gin.Context) {
+	userID := mw.GetUserID(c)
+	if userID == "" {
+		errors.Abort(c, errors.ErrUnauthorized)
+		return
+	}
+
+	var req ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errors.FailMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.svc.ChangePassword(c.Request.Context(), userID, req.CurrentPassword, req.NewPassword); err != nil {
+		h.logAudit(c, userID, "change_password", "failure")
+		errors.FailMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	h.logAudit(c, userID, "change_password", "success")
+	errors.OK(c, gin.H{"message": "password changed successfully"})
+}
+
 // EnrollMFA godoc
 // POST /api/v1/auth/mfa/enroll
 func (h *Handler) EnrollMFA(c *gin.Context) {

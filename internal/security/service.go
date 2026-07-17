@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"intelligence-platform/pkg/pagination"
+
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -23,7 +25,7 @@ func NewService(db *mongo.Database, log *zap.Logger) *Service {
 
 func (s *Service) incidents() *mongo.Collection { return s.db.Collection("security_incidents") }
 func (s *Service) blocklist() *mongo.Collection { return s.db.Collection("blocklist") }
-func (s *Service) vulns() *mongo.Collection      { return s.db.Collection("vulnerabilities") }
+func (s *Service) vulns() *mongo.Collection     { return s.db.Collection("vulnerabilities") }
 
 func (s *Service) GetDashboardStats(ctx context.Context) (map[string]interface{}, error) {
 	criticalOpen, _ := s.incidents().CountDocuments(ctx, bson.M{"severity": "critical", "status": bson.M{"$ne": "resolved"}})
@@ -48,24 +50,40 @@ func (s *Service) GetDashboardStats(ctx context.Context) (map[string]interface{}
 	}, nil
 }
 
-func (s *Service) ListIncidents(ctx context.Context) ([]*SecurityIncident, error) {
-	opts := options.Find().SetSort(bson.D{{Key: "ts", Value: -1}}).SetLimit(200)
+// ListIncidents returns security incidents, newest first. When pg is nil,
+// the old fixed cap of 200 is returned (pre-pagination behaviour, total is 0
+// and should be ignored); otherwise a single page plus the total match count
+// is returned.
+func (s *Service) ListIncidents(ctx context.Context, pg *pagination.Params) ([]*SecurityIncident, int64, error) {
+	opts := options.Find().SetSort(bson.D{{Key: "ts", Value: -1}})
+	var total int64
+	if pg != nil {
+		var err error
+		total, err = s.incidents().CountDocuments(ctx, bson.M{})
+		if err != nil {
+			return nil, 0, err
+		}
+		opts.SetSkip(pg.Skip()).SetLimit(pg.Take())
+	} else {
+		opts.SetLimit(200)
+	}
+
 	cur, err := s.incidents().Find(ctx, bson.M{}, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer cur.Close(ctx)
 
-	var list []*SecurityIncident
+	list := []*SecurityIncident{}
 	if err := cur.All(ctx, &list); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for _, si := range list {
 		if si.AffectedAssets == nil {
 			si.AffectedAssets = []string{}
 		}
 	}
-	return list, nil
+	return list, total, nil
 }
 
 func (s *Service) GetIncident(ctx context.Context, id string) (*SecurityIncident, error) {

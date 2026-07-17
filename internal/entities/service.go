@@ -6,9 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"intelligence-platform/pkg/pagination"
+
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"
 )
 
@@ -23,6 +26,7 @@ func NewService(db *mongo.Database, log *zap.Logger) *Service {
 
 func (s *Service) entities() *mongo.Collection      { return s.db.Collection("entities") }
 func (s *Service) relationships() *mongo.Collection { return s.db.Collection("relationships") }
+func (s *Service) caseEntities() *mongo.Collection  { return s.db.Collection("case_entities") }
 
 func (s *Service) CreateEntity(ctx context.Context, req CreateEntityRequest) (*Entity, error) {
 	now := time.Now()
@@ -52,36 +56,158 @@ func (s *Service) GetEntity(ctx context.Context, id string) (*Entity, error) {
 	return e, nil
 }
 
-func (s *Service) ListEntities(ctx context.Context, search, entType string) ([]*Entity, error) {
+// ListEntities returns entities matching the optional search/type filters. If
+// pg is nil, pagination is not applied and every matching entity is returned
+// (preserves pre-pagination behaviour for callers that don't send
+// ?page=/&limit=). The returned int64 is the total match count (0 when pg is
+// nil, since callers that skip pagination don't need it).
+func (s *Service) ListEntities(ctx context.Context, search, entType string, pg *pagination.Params) ([]*Entity, int64, error) {
 	filter := bson.M{}
 	if entType != "" {
 		filter["type"] = entType
 	}
 
-	cur, err := s.entities().Find(ctx, filter)
+	// Free-form property search is done in-application (mirrors the old
+	// `properties::text ILIKE` behaviour across arbitrary JSON values), so it
+	// can't be combined with a Mongo-level skip/limit. Paginate in memory
+	// instead when a search term is present.
+	if search != "" {
+		cur, err := s.entities().Find(ctx, filter)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer cur.Close(ctx)
+
+		var all []*Entity
+		if err := cur.All(ctx, &all); err != nil {
+			return nil, 0, err
+		}
+
+		needle := strings.ToLower(search)
+		var matched []*Entity
+		for _, e := range all {
+			if entityMatches(e, needle) {
+				matched = append(matched, e)
+			}
+		}
+		total := int64(len(matched))
+		if pg == nil {
+			return matched, total, nil
+		}
+		start := pg.Skip()
+		if start > total {
+			start = total
+		}
+		end := start + pg.Take()
+		if end > total {
+			end = total
+		}
+		return matched[start:end], total, nil
+	}
+
+	if pg == nil {
+		cur, err := s.entities().Find(ctx, filter)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer cur.Close(ctx)
+
+		var all []*Entity
+		if err := cur.All(ctx, &all); err != nil {
+			return nil, 0, err
+		}
+		return all, 0, nil
+	}
+
+	total, err := s.entities().CountDocuments(ctx, filter)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	opts := options.Find().SetSkip(pg.Skip()).SetLimit(pg.Take())
+	cur, err := s.entities().Find(ctx, filter, opts)
+	if err != nil {
+		return nil, 0, err
 	}
 	defer cur.Close(ctx)
 
-	var all []*Entity
-	if err := cur.All(ctx, &all); err != nil {
+	list := []*Entity{}
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
+}
+
+// UpdateEntity applies a partial update to an entity.
+func (s *Service) UpdateEntity(ctx context.Context, id string, req UpdateEntityRequest) (*Entity, error) {
+	set := bson.M{}
+	if req.Type != nil {
+		set["type"] = *req.Type
+	}
+	if req.Classification != nil {
+		set["classification"] = *req.Classification
+	}
+	if req.Properties != nil {
+		props := req.Properties
+		if req.Label != nil {
+			props["label"] = *req.Label
+		}
+		set["properties"] = props
+	} else if req.Label != nil {
+		set["properties.label"] = *req.Label
+	}
+	if len(set) == 0 {
+		return s.GetEntity(ctx, id)
+	}
+	set["updated_at"] = time.Now()
+
+	res, err := s.entities().UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})
+	if err != nil {
 		return nil, err
 	}
+	if res.MatchedCount == 0 {
+		return nil, mongo.ErrNoDocuments
+	}
+	return s.GetEntity(ctx, id)
+}
 
-	// Free-form property search is done in-application (mirrors the old
-	// `properties::text ILIKE` behaviour across arbitrary JSON values).
-	if search == "" {
-		return all, nil
+// DeleteEntity removes an entity along with every relationship it
+// participates in (as either endpoint) and every case_items row referencing
+// it, so no dangling references survive the delete.
+func (s *Service) DeleteEntity(ctx context.Context, id string) error {
+	res, err := s.entities().DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return err
 	}
-	needle := strings.ToLower(search)
-	var list []*Entity
-	for _, e := range all {
-		if entityMatches(e, needle) {
-			list = append(list, e)
-		}
+	if res.DeletedCount == 0 {
+		return mongo.ErrNoDocuments
 	}
-	return list, nil
+
+	if _, err := s.relationships().DeleteMany(ctx, bson.M{
+		"$or": bson.A{
+			bson.M{"entity_id_from": id},
+			bson.M{"entity_id_to": id},
+		},
+	}); err != nil {
+		return err
+	}
+
+	if _, err := s.caseEntities().DeleteMany(ctx, bson.M{"entity_id": id}); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// DeleteRelationship removes a single relationship by ID.
+func (s *Service) DeleteRelationship(ctx context.Context, id string) error {
+	res, err := s.relationships().DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
 }
 
 func entityMatches(e *Entity, needle string) bool {

@@ -46,6 +46,8 @@ func main() {
 		log.Fatal("Failed to load config", zap.Error(err))
 	}
 
+	startTime := time.Now()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -129,12 +131,32 @@ func main() {
 		}
 	}
 
+	// GET /health — public, no auth required (deploy/monitoring probe).
+	r.GET("/health", func(c *gin.Context) {
+		pingCtx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+
+		dbStatus := "ok"
+		httpStatus := http.StatusOK
+		if err := db.Client().Ping(pingCtx, nil); err != nil {
+			dbStatus = "down"
+			httpStatus = http.StatusServiceUnavailable
+		}
+
+		c.JSON(httpStatus, gin.H{
+			"status":         "ok",
+			"db":             dbStatus,
+			"uptime_seconds": int64(time.Since(startTime).Seconds()),
+		})
+	})
+
 	// Authenticated routes
 	authMW := mw.Auth(cfg.JWTSecret)
 	v1Auth := r.Group("/api/v1", authMW, audit.Middleware(auditSvc))
 	{
 		v1Auth.POST("/auth/logout", authHandler.Logout)
 		v1Auth.GET("/auth/me", authHandler.Me)
+		v1Auth.POST("/auth/change-password", authHandler.ChangePassword)
 		v1Auth.POST("/auth/mfa/enroll", authHandler.EnrollMFA)
 		v1Auth.POST("/auth/mfa/verify", authHandler.VerifyMFA)
 		v1Auth.POST("/auth/mfa/disable", authHandler.DisableMFA)
@@ -163,7 +185,10 @@ func main() {
 		v1Auth.GET("/entities", entitiesHandler.ListEntities)
 		v1Auth.POST("/entities", entitiesHandler.CreateEntity)
 		v1Auth.GET("/entities/:id", entitiesHandler.GetEntity)
+		v1Auth.PUT("/entities/:id", entitiesHandler.UpdateEntity)
+		v1Auth.DELETE("/entities/:id", entitiesHandler.DeleteEntity)
 		v1Auth.POST("/entities/relationship", entitiesHandler.CreateRelationship)
+		v1Auth.DELETE("/entities/relationship/:id", entitiesHandler.DeleteRelationship)
 		v1Auth.POST("/graph/expand", entitiesHandler.Expand)
 		v1Auth.POST("/graph/path", entitiesHandler.FindPath)
 
@@ -198,13 +223,17 @@ func main() {
 
 		// AI analyst assistant (local Ollama / Claude / simulated)
 		v1Auth.POST("/ai/chat", aiHandler.Chat)
+		v1Auth.GET("/ai/history", aiHandler.History)
 
 		// Cases
 		v1Auth.GET("/cases", casesHandler.List)
 		v1Auth.POST("/cases", casesHandler.Create)
 		v1Auth.GET("/cases/:id", casesHandler.Get)
+		v1Auth.PATCH("/cases/:id", casesHandler.Update)
+		v1Auth.DELETE("/cases/:id", casesHandler.Delete)
 		v1Auth.GET("/cases/:id/entities", casesHandler.GetEntities)
 		v1Auth.POST("/cases/:id/entities", casesHandler.AddEntity)
+		v1Auth.DELETE("/cases/:id/entities/:entity_id", casesHandler.RemoveEntity)
 
 		// Security (SIEM)
 		v1Auth.GET("/security/dashboard", securityHandler.GetDashboard)
@@ -233,8 +262,10 @@ func main() {
 		v1Auth.GET("/agents/:id/commands", agentHandler.ListCommands)
 	}
 
-	// WebSocket handler (optional auth via query param or headers, here public for simplicity of testing)
-	r.GET("/ws", wsHub.ServeWS)
+	// WebSocket handler — requires a valid access token via ?token= query
+	// param (WS clients can't set an Authorization header on the upgrade
+	// request); invalid/missing token is rejected with 401 before upgrade.
+	r.GET("/ws", mw.WSAuth(cfg.JWTSecret), wsHub.ServeWS)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,

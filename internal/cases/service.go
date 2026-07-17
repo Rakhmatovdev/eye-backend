@@ -79,6 +79,61 @@ func (s *Service) AddEntity(ctx context.Context, caseID, entityID, userID string
 	return err
 }
 
+// Update applies a partial update to a case (title/description/status).
+func (s *Service) Update(ctx context.Context, id string, req UpdateCaseRequest) (*Case, error) {
+	set := bson.M{}
+	if req.Title != nil {
+		set["title"] = *req.Title
+	}
+	if req.Description != nil {
+		set["description"] = *req.Description
+	}
+	if req.Status != nil {
+		set["status"] = *req.Status
+	}
+	if len(set) == 0 {
+		return s.Get(ctx, id)
+	}
+	set["updated_at"] = time.Now()
+
+	res, err := s.cases().UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": set})
+	if err != nil {
+		return nil, err
+	}
+	if res.MatchedCount == 0 {
+		return nil, mongo.ErrNoDocuments
+	}
+	return s.Get(ctx, id)
+}
+
+// Delete removes a case and every case_items row that references it.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	res, err := s.cases().DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	if _, err := s.caseEntities().DeleteMany(ctx, bson.M{"case_id": id}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RemoveEntity removes a single entity from a case (does not delete the
+// entity itself).
+func (s *Service) RemoveEntity(ctx context.Context, caseID, entityID string) error {
+	res, err := s.caseEntities().DeleteOne(ctx, bson.M{"case_id": caseID, "entity_id": entityID})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+	return nil
+}
+
 func (s *Service) GetEntities(ctx context.Context, caseID string) ([]*entities.Entity, error) {
 	ids, err := s.caseEntities().Distinct(ctx, "entity_id", bson.M{"case_id": caseID})
 	if err != nil {

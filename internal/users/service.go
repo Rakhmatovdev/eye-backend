@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"regexp"
 	"time"
 
@@ -31,16 +30,11 @@ func NewService(db *mongo.Database, log *zap.Logger) *Service {
 
 func (s *Service) col() *mongo.Collection { return s.db.Collection("users") }
 
-// List returns a paginated list of users with optional filters.
-func (s *Service) List(ctx context.Context, f ListUsersFilter) ([]*User, PaginationMeta, error) {
-	if f.Page < 1 {
-		f.Page = 1
-	}
-	if f.Limit < 1 || f.Limit > 100 {
-		f.Limit = 20
-	}
-	offset := (f.Page - 1) * f.Limit
-
+// List returns users matching the optional filters. When f.Pg is nil, every
+// match is returned (pre-pagination behaviour, total is 0 and should be
+// ignored by the caller); otherwise a single page plus the total match count
+// is returned.
+func (s *Service) List(ctx context.Context, f ListUsersFilter) ([]*User, int64, error) {
 	filter := bson.M{}
 	if f.Status != "" {
 		filter["status"] = f.Status
@@ -57,31 +51,32 @@ func (s *Service) List(ctx context.Context, f ListUsersFilter) ([]*User, Paginat
 		}
 	}
 
-	total, err := s.col().CountDocuments(ctx, filter)
-	if err != nil {
-		return nil, PaginationMeta{}, fmt.Errorf("count query failed: %w", err)
-	}
-
 	opts := options.Find().
 		SetSort(bson.D{{Key: "created_at", Value: -1}}).
-		SetSkip(int64(offset)).
-		SetLimit(int64(f.Limit)).
 		SetProjection(bson.M{"password_hash": 0})
+
+	var total int64
+	if f.Pg != nil {
+		var err error
+		total, err = s.col().CountDocuments(ctx, filter)
+		if err != nil {
+			return nil, 0, fmt.Errorf("count query failed: %w", err)
+		}
+		opts.SetSkip(f.Pg.Skip()).SetLimit(f.Pg.Take())
+	}
 
 	cur, err := s.col().Find(ctx, filter, opts)
 	if err != nil {
-		return nil, PaginationMeta{}, fmt.Errorf("list query failed: %w", err)
+		return nil, 0, fmt.Errorf("list query failed: %w", err)
 	}
 	defer cur.Close(ctx)
 
-	var users []*User
+	users := []*User{}
 	if err := cur.All(ctx, &users); err != nil {
-		return nil, PaginationMeta{}, err
+		return nil, 0, err
 	}
 
-	pages := int(math.Ceil(float64(total) / float64(f.Limit)))
-	meta := PaginationMeta{Total: int(total), Page: f.Page, Limit: f.Limit, Pages: pages}
-	return users, meta, nil
+	return users, total, nil
 }
 
 // Create creates a new user.

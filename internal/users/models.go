@@ -2,6 +2,8 @@ package users
 
 import (
 	"time"
+
+	"intelligence-platform/pkg/pagination"
 )
 
 // User represents a platform user (full model).
@@ -39,19 +41,12 @@ type UpdateUserRequest struct {
 	Department     *string `json:"department"`
 }
 
-// ListUsersFilter holds query filters for listing users.
+// ListUsersFilter holds query filters for listing users. Pg is nil when the
+// caller sent neither ?page= nor ?limit=, meaning List returns every match
+// (pre-pagination behaviour) instead of a single page.
 type ListUsersFilter struct {
 	Status string
 	Role   string
 	Search string
-	Page   int
-	Limit  int
-}
-
-// PaginationMeta holds pagination metadata.
-type PaginationMeta struct {
-	Total  int `json:"total"`
-	Page   int `json:"page"`
-	Limit  int `json:"limit"`
-	Pages  int `json:"pages"`
+	Pg     *pagination.Params
 }

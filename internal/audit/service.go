@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"intelligence-platform/pkg/pagination"
+
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -84,7 +86,11 @@ func (s *Service) Log(ctx context.Context, userID, action, resource, ip, result 
 	return nil
 }
 
-func (s *Service) List(ctx context.Context, search, action string) ([]*AuditLog, error) {
+// List returns audit log entries matching the optional search/action
+// filters. When pg is nil, the old fixed cap of 100 most-recent entries is
+// returned (pre-pagination behaviour, total is 0 and should be ignored);
+// otherwise a single page plus the total match count is returned.
+func (s *Service) List(ctx context.Context, search, action string, pg *pagination.Params) ([]*AuditLog, int64, error) {
 	filter := bson.M{}
 	if search != "" {
 		rx := bson.M{"$regex": search, "$options": "i"}
@@ -97,16 +103,28 @@ func (s *Service) List(ctx context.Context, search, action string) ([]*AuditLog,
 		filter["action"] = action
 	}
 
-	opts := options.Find().SetSort(bson.D{{Key: "ts", Value: -1}}).SetLimit(100)
+	opts := options.Find().SetSort(bson.D{{Key: "ts", Value: -1}})
+	var total int64
+	if pg != nil {
+		var err error
+		total, err = s.col().CountDocuments(ctx, filter)
+		if err != nil {
+			return nil, 0, err
+		}
+		opts.SetSkip(pg.Skip()).SetLimit(pg.Take())
+	} else {
+		opts.SetLimit(100)
+	}
+
 	cur, err := s.col().Find(ctx, filter, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer cur.Close(ctx)
 
-	var logs []*AuditLog
+	logs := []*AuditLog{}
 	if err := cur.All(ctx, &logs); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return logs, nil
+	return logs, total, nil
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"intelligence-platform/pkg/errors"
+	"intelligence-platform/pkg/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,11 +17,22 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// List godoc - GET /api/v1/timeline?type=&entity_id=
+// List godoc - GET /api/v1/timeline?type=&entity_id=&page=&limit=
 func (h *Handler) List(c *gin.Context) {
-	list, err := h.svc.List(c.Request.Context(), c.Query("type"), c.Query("entity_id"))
+	pg, ok := pagination.Parse(c.Query("page"), c.Query("limit"))
+	var pgPtr *pagination.Params
+	if ok {
+		pgPtr = &pg
+	}
+
+	list, total, err := h.svc.List(c.Request.Context(), c.Query("type"), c.Query("entity_id"), pgPtr)
 	if err != nil {
 		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if ok {
+		errors.OKWithMeta(c, list, pg.ToMeta(total))
 		return
 	}
 	errors.OK(c, list)

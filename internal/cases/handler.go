@@ -1,12 +1,14 @@
 package cases
 
 import (
+	stderrors "errors"
 	"net/http"
 
 	"intelligence-platform/pkg/errors"
 	mw "intelligence-platform/pkg/middleware"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 type Handler struct {
@@ -54,6 +56,59 @@ func (h *Handler) Get(c *gin.Context) {
 	}
 
 	errors.OK(c, res)
+}
+
+// Update godoc - PATCH /api/v1/cases/:id {title?,description?,status?}
+func (h *Handler) Update(c *gin.Context) {
+	id := c.Param("id")
+	var req UpdateCaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errors.FailMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	res, err := h.svc.Update(c.Request.Context(), id, req)
+	if err != nil {
+		if stderrors.Is(err, mongo.ErrNoDocuments) {
+			errors.Fail(c, errors.ErrNotFound)
+			return
+		}
+		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	errors.OK(c, res)
+}
+
+// Delete godoc - DELETE /api/v1/cases/:id
+func (h *Handler) Delete(c *gin.Context) {
+	id := c.Param("id")
+	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
+		if stderrors.Is(err, mongo.ErrNoDocuments) {
+			errors.Fail(c, errors.ErrNotFound)
+			return
+		}
+		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	errors.OK(c, gin.H{"message": "case deleted"})
+}
+
+// RemoveEntity godoc - DELETE /api/v1/cases/:id/entities/:entity_id
+func (h *Handler) RemoveEntity(c *gin.Context) {
+	id := c.Param("id")
+	entityID := c.Param("entity_id")
+	if err := h.svc.RemoveEntity(c.Request.Context(), id, entityID); err != nil {
+		if stderrors.Is(err, mongo.ErrNoDocuments) {
+			errors.Fail(c, errors.ErrNotFound)
+			return
+		}
+		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	errors.OK(c, gin.H{"message": "entity removed from case"})
 }
 
 func (h *Handler) GetEntities(c *gin.Context) {

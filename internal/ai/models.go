@@ -1,5 +1,7 @@
 package ai
 
+import "time"
+
 // ChatMessage is one turn of the conversation (role: "user" | "assistant").
 type ChatMessage struct {
 	Role    string `json:"role"`
@@ -27,4 +29,15 @@ type Config struct {
 	OllamaModel     string
 	AnthropicAPIKey string
 	AnthropicModel  string
+}
+
+// ChatHistoryEntry is one persisted exchange in the `ai_chats` collection,
+// returned by GET /ai/history oldest-first.
+type ChatHistoryEntry struct {
+	ID        string    `json:"id" bson:"_id"`
+	UserID    string    `json:"user_id" bson:"user_id"`
+	Message   string    `json:"message" bson:"message"`
+	Reply     string    `json:"reply" bson:"reply"`
+	Source    string    `json:"source" bson:"source"`
+	Timestamp time.Time `json:"ts" bson:"ts"`
 }

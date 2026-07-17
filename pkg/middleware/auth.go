@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -26,6 +27,32 @@ const (
 	ContextKeyClaims         = "claims"
 )
 
+// ParseToken validates a JWT access token string and returns its claims. It
+// is the single source of truth for JWT verification, shared by the
+// Authorization-header Auth middleware and the query-param WSAuth middleware
+// so token parsing logic never has to be duplicated.
+func ParseToken(jwtSecret, tokenStr string) (*Claims, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(jwtSecret), nil
+	})
+	if err != nil || !token.Valid {
+		return nil, fmt.Errorf("invalid or expired token")
+	}
+	return claims, nil
+}
+
+func setClaimsOnContext(c *gin.Context, claims *Claims) {
+	c.Set(ContextKeyUserID, claims.UserID)
+	c.Set(ContextKeyEmail, claims.Email)
+	c.Set(ContextKeyRole, claims.Role)
+	c.Set(ContextKeyClearanceLevel, claims.ClearanceLevel)
+	c.Set(ContextKeyClaims, claims)
+}
+
 // Auth returns a middleware that validates JWT bearer tokens.
 func Auth(jwtSecret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -41,26 +68,37 @@ func Auth(jwtSecret string) gin.HandlerFunc {
 			return
 		}
 
-		tokenStr := parts[1]
-		claims := &Claims{}
-
-		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return []byte(jwtSecret), nil
-		})
-
-		if err != nil || !token.Valid {
+		claims, err := ParseToken(jwtSecret, parts[1])
+		if err != nil {
 			errors.Abort(c, errors.WithDetail(errors.ErrUnauthorized, "invalid or expired token"))
 			return
 		}
 
-		c.Set(ContextKeyUserID, claims.UserID)
-		c.Set(ContextKeyEmail, claims.Email)
-		c.Set(ContextKeyRole, claims.Role)
-		c.Set(ContextKeyClearanceLevel, claims.ClearanceLevel)
-		c.Set(ContextKeyClaims, claims)
+		setClaimsOnContext(c, claims)
+
+		c.Next()
+	}
+}
+
+// WSAuth validates a JWT access token supplied via the `?token=` query
+// parameter (WebSocket clients cannot set an Authorization header on the
+// upgrade request). Missing/invalid tokens are rejected with 401 before the
+// connection is upgraded.
+func WSAuth(jwtSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenStr := c.Query("token")
+		if tokenStr == "" {
+			errors.Abort(c, errors.WithDetail(errors.ErrUnauthorized, "missing token query parameter"))
+			return
+		}
+
+		claims, err := ParseToken(jwtSecret, tokenStr)
+		if err != nil {
+			errors.Abort(c, errors.WithDetail(errors.ErrUnauthorized, "invalid or expired token"))
+			return
+		}
+
+		setClaimsOnContext(c, claims)
 
 		c.Next()
 	}

@@ -53,6 +53,12 @@ type RefreshRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
+// ChangePasswordRequest is the body for POST /auth/change-password.
+type ChangePasswordRequest struct {
+	CurrentPassword string `json:"current_password" binding:"required"`
+	NewPassword     string `json:"new_password" binding:"required,min=8"`
+}
+
 // TokenPair holds both access and refresh tokens.
 type TokenPair struct {
 	AccessToken  string

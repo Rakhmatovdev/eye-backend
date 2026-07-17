@@ -2,10 +2,10 @@ package users
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 
 	"intelligence-platform/pkg/errors"
+	"intelligence-platform/pkg/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,26 +20,30 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// List godoc - GET /api/v1/users
+// List godoc - GET /api/v1/users?status=&role=&search=&page=&limit=
 func (h *Handler) List(c *gin.Context) {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	pg, ok := pagination.Parse(c.Query("page"), c.Query("limit"))
 
 	filter := ListUsersFilter{
 		Status: c.Query("status"),
 		Role:   c.Query("role"),
 		Search: c.Query("search"),
-		Page:   page,
-		Limit:  limit,
+	}
+	if ok {
+		filter.Pg = &pg
 	}
 
-	users, meta, err := h.svc.List(c.Request.Context(), filter)
+	users, total, err := h.svc.List(c.Request.Context(), filter)
 	if err != nil {
 		errors.FailMsg(c, http.StatusInternalServerError, "failed to list users")
 		return
 	}
 
-	errors.OKWithMeta(c, users, meta)
+	if ok {
+		errors.OKWithMeta(c, users, pg.ToMeta(total))
+		return
+	}
+	errors.OK(c, users)
 }
 
 // Create godoc - POST /api/v1/users

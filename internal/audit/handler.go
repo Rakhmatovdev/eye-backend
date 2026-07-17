@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"intelligence-platform/pkg/errors"
+	"intelligence-platform/pkg/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,21 +20,32 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
+// List godoc - GET /api/v1/audit?search=&action=&page=&limit=
 func (h *Handler) List(c *gin.Context) {
 	search := c.Query("search")
 	action := c.Query("action")
 
-	logs, err := h.svc.List(c.Request.Context(), search, action)
+	pg, ok := pagination.Parse(c.Query("page"), c.Query("limit"))
+	var pgPtr *pagination.Params
+	if ok {
+		pgPtr = &pg
+	}
+
+	logs, total, err := h.svc.List(c.Request.Context(), search, action, pgPtr)
 	if err != nil {
 		errors.FailMsg(c, http.StatusInternalServerError, "failed to get audit logs")
 		return
 	}
 
+	if ok {
+		errors.OKWithMeta(c, logs, pg.ToMeta(total))
+		return
+	}
 	errors.OK(c, logs)
 }
 
 func (h *Handler) Export(c *gin.Context) {
-	logs, err := h.svc.List(c.Request.Context(), "", "")
+	logs, _, err := h.svc.List(c.Request.Context(), "", "", nil)
 	if err != nil {
 		errors.FailMsg(c, http.StatusInternalServerError, "failed to export logs")
 		return

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -76,6 +77,52 @@ func (s *Service) Chat(ctx context.Context, req ChatRequest) ChatResponse {
 	}
 
 	return ChatResponse{Reply: s.simulatedReply(ctx, req.Message), Source: "simulated"}
+}
+
+func (s *Service) chats() *mongo.Collection { return s.db.Collection("ai_chats") }
+
+// SaveChat persists one chat exchange to the `ai_chats` collection. It is
+// best-effort: a failure is logged but never returned to the caller, so a
+// storage hiccup never fails the already-answered chat response.
+func (s *Service) SaveChat(ctx context.Context, userID, message, reply, source string) {
+	if userID == "" {
+		userID = "anonymous"
+	}
+	doc := ChatHistoryEntry{
+		ID:        uuid.New().String(),
+		UserID:    userID,
+		Message:   message,
+		Reply:     reply,
+		Source:    source,
+		Timestamp: time.Now(),
+	}
+	if _, err := s.chats().InsertOne(ctx, doc); err != nil {
+		s.log.Error("failed to persist ai chat exchange", zap.Error(err))
+	}
+}
+
+// History returns the current user's most recent chat exchanges, oldest
+// first, capped at limit (default/invalid -> 50, max 200).
+func (s *Service) History(ctx context.Context, userID string, limit int) ([]*ChatHistoryEntry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	opts := options.Find().SetSort(bson.D{{Key: "ts", Value: -1}}).SetLimit(int64(limit))
+	cur, err := s.chats().Find(ctx, bson.M{"user_id": userID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+
+	list := []*ChatHistoryEntry{}
+	if err := cur.All(ctx, &list); err != nil {
+		return nil, err
+	}
+	// Reverse the (newest-first) query result to oldest-first for the client.
+	for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
+		list[i], list[j] = list[j], list[i]
+	}
+	return list, nil
 }
 
 /* ------------------------------ Ollama (local) --------------------------- */

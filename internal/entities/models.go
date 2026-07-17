@@ -28,6 +28,17 @@ type CreateEntityRequest struct {
 	SourceID       string                 `json:"source_id"`
 }
 
+// UpdateEntityRequest is the body for PUT /entities/:id — a partial update.
+// All fields are optional; only supplied fields are changed. Label is a
+// convenience field that maps to properties["label"] when Properties itself
+// is not also supplied (Properties, when present, replaces the whole map).
+type UpdateEntityRequest struct {
+	Type           *string                `json:"type"`
+	Label          *string                `json:"label"`
+	Properties     map[string]interface{} `json:"properties"`
+	Classification *string                `json:"classification"`
+}
+
 type CreateRelationshipRequest struct {
 	EntityIDFrom string                 `json:"entity_id_from" binding:"required"`
 	EntityIDTo   string                 `json:"entity_id_to" binding:"required"`

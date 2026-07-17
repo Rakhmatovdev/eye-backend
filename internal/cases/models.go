@@ -24,3 +24,10 @@ type CreateCaseRequest struct {
 type AddEntityRequest struct {
 	EntityID string `json:"entity_id" binding:"required"`
 }
+
+// UpdateCaseRequest is the body for PATCH /cases/:id — a partial update.
+type UpdateCaseRequest struct {
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+	Status      *string `json:"status" binding:"omitempty,oneof=open investigating closed archived"`
+}

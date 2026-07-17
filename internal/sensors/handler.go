@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"intelligence-platform/pkg/errors"
+	"intelligence-platform/pkg/pagination"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,10 +38,27 @@ func (h *Handler) Get(c *gin.Context) {
 	errors.OK(c, out)
 }
 
-// Detections godoc - GET /api/v1/sensors/detections?sensor_id=&entity_id=&limit=
+// Detections godoc - GET /api/v1/sensors/detections?sensor_id=&entity_id=&limit=&page=
+// `limit` alone keeps its legacy "simple cap" meaning (up to 500, no meta) so
+// existing callers (the live feed) are unaffected. Passing `page` opts into
+// true page/limit pagination with a `meta {page,limit,total}` envelope.
 func (h *Handler) Detections(c *gin.Context) {
+	sensorID := c.Query("sensor_id")
+	entityID := c.Query("entity_id")
+
+	if pageStr := c.Query("page"); pageStr != "" {
+		pg, _ := pagination.Parse(pageStr, c.Query("limit"))
+		list, total, err := h.svc.DetectionsPaginated(c.Request.Context(), sensorID, entityID, pg)
+		if err != nil {
+			errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+			return
+		}
+		errors.OKWithMeta(c, list, pg.ToMeta(total))
+		return
+	}
+
 	limit, _ := strconv.ParseInt(c.Query("limit"), 10, 64)
-	list, err := h.svc.Detections(c.Request.Context(), c.Query("sensor_id"), c.Query("entity_id"), limit)
+	list, err := h.svc.Detections(c.Request.Context(), sensorID, entityID, limit)
 	if err != nil {
 		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
 		return

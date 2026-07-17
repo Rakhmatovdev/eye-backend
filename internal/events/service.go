@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"intelligence-platform/pkg/pagination"
+
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -23,8 +25,10 @@ func NewService(db *mongo.Database, log *zap.Logger) *Service {
 func (s *Service) events() *mongo.Collection { return s.db.Collection("events") }
 
 // List returns timeline events ascending by timestamp, optionally filtered by
-// event type and/or the entity they belong to.
-func (s *Service) List(ctx context.Context, eventType, entityID string) ([]*Event, error) {
+// event type and/or the entity they belong to. When pg is nil, every match
+// is returned (pre-pagination behaviour, total is 0 and should be ignored);
+// otherwise a single page plus the total match count is returned.
+func (s *Service) List(ctx context.Context, eventType, entityID string, pg *pagination.Params) ([]*Event, int64, error) {
 	filter := bson.M{}
 	if eventType != "" && eventType != "all" {
 		filter["type"] = eventType
@@ -33,17 +37,28 @@ func (s *Service) List(ctx context.Context, eventType, entityID string) ([]*Even
 		filter["entity_id"] = entityID
 	}
 
-	cur, err := s.events().Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "timestamp", Value: 1}}))
+	opts := options.Find().SetSort(bson.D{{Key: "timestamp", Value: 1}})
+	var total int64
+	if pg != nil {
+		var err error
+		total, err = s.events().CountDocuments(ctx, filter)
+		if err != nil {
+			return nil, 0, err
+		}
+		opts.SetSkip(pg.Skip()).SetLimit(pg.Take())
+	}
+
+	cur, err := s.events().Find(ctx, filter, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer cur.Close(ctx)
 
 	list := []*Event{}
 	if err := cur.All(ctx, &list); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return list, nil
+	return list, total, nil
 }
 
 func (s *Service) Create(ctx context.Context, req CreateEventRequest) (*Event, error) {
