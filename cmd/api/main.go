@@ -84,12 +84,14 @@ func main() {
 		AnthropicModel:  cfg.AnthropicModel,
 	})
 	monitoringSvc := monitoring.NewService()
+	monitoringHist := monitoring.NewHistory(monitoring.HistoryCapacity)
 	agentSvc := remoteagent.NewService(db, log)
 
 	// 5. Init Hub & WebSocket
 	wsHub := realtime.NewHub(log)
 	go wsHub.Run()
 	go realtime.StartBroadcaster(wsHub)
+	go monitoring.StartSampler(monitoringSvc, monitoringHist)
 
 	// 6. Init Handlers
 	authHandler := auth.NewHandler(authSvc, auditSvc)
@@ -103,7 +105,7 @@ func main() {
 	sensorsHandler := sensors.NewHandler(sensorsSvc)
 	militaryHandler := military.NewHandler(militarySvc)
 	aiHandler := ai.NewHandler(aiSvc)
-	monitoringHandler := monitoring.NewHandler(monitoringSvc)
+	monitoringHandler := monitoring.NewHandler(monitoringSvc, monitoringHist)
 	agentHandler := remoteagent.NewHandler(agentSvc)
 
 	// 7. Setup Router
@@ -220,6 +222,7 @@ func main() {
 
 		// Monitoring
 		v1Auth.GET("/monitoring/metrics", monitoringHandler.GetMetrics)
+		v1Auth.GET("/monitoring/metrics/history", monitoringHandler.GetMetricsHistory)
 		v1Auth.GET("/monitoring/services", monitoringHandler.GetServices)
 		v1Auth.GET("/monitoring/data-sources", monitoringHandler.GetDataSources)
 
