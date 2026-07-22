@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"intelligence-platform/pkg/errors"
+	mw "intelligence-platform/pkg/middleware"
 	"intelligence-platform/pkg/pagination"
 
 	"github.com/gin-gonic/gin"
@@ -69,8 +70,13 @@ func (h *Handler) Create(c *gin.Context) {
 }
 
 // GetByID godoc - GET /api/v1/users/:id
+// Admins may look up anyone; everyone else only their own record.
 func (h *Handler) GetByID(c *gin.Context) {
 	id := c.Param("id")
+	if !strings.EqualFold(mw.GetUserRole(c), "admin") && mw.GetUserID(c) != id {
+		errors.Fail(c, errors.ErrForbidden)
+		return
+	}
 	user, err := h.svc.GetByID(c.Request.Context(), id)
 	if err != nil {
 		errors.Fail(c, errors.ErrNotFound)

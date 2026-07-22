@@ -39,6 +39,8 @@ func main() {
 		panic(err)
 	}
 	defer log.Sync()
+	// pkg/errors.Internal logs through the global logger.
+	zap.ReplaceGlobals(log)
 
 	// 2. Load config
 	cfg, err := config.Load()
@@ -119,7 +121,10 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(logger.Middleware(log))
-	r.Use(mw.CORS(cfg.CORSOrigins))
+	r.Use(mw.SecurityHeaders())
+	r.Use(mw.BodySizeLimit(1 << 20)) // 1 MiB — largest legit body is an AI chat history
+	// Loopback/private-LAN origins are only auto-allowed outside production.
+	r.Use(mw.CORS(cfg.CORSOrigins, !cfg.IsProduction()))
 
 	// Public routes
 	v1 := r.Group("/api/v1")
@@ -179,9 +184,9 @@ func main() {
 		v1Auth.GET("/permissions", rbacHandler.ListPermissions)
 		v1Auth.POST("/roles/:id/permissions", userAdminMW, rbacHandler.AssignPermissions)
 
-		// Audit Logs
-		v1Auth.GET("/audit", auditHandler.List)
-		v1Auth.GET("/audit/export", auditHandler.Export)
+		// Audit Logs — admin only: they expose every user's actions and IPs.
+		v1Auth.GET("/audit", userAdminMW, auditHandler.List)
+		v1Auth.GET("/audit/export", userAdminMW, auditHandler.Export)
 
 		// Entities & Relationships
 		v1Auth.GET("/entities", entitiesHandler.ListEntities)

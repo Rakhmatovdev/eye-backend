@@ -27,7 +27,7 @@ func (h *Handler) List(c *gin.Context) {
 
 	list, total, err := h.svc.List(c.Request.Context(), c.Query("type"), c.Query("entity_id"), pgPtr)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -47,7 +47,7 @@ func (h *Handler) Create(c *gin.Context) {
 	}
 	e, err := h.svc.Create(c.Request.Context(), req)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.Created(c, e)

@@ -187,7 +187,7 @@ func (h *Handler) EnrollMFA(c *gin.Context) {
 	}
 	resp, err := h.svc.EnrollMFA(c.Request.Context(), userID)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, resp)

@@ -28,7 +28,7 @@ func currentUserLabel(c *gin.Context) string {
 func (h *Handler) GetDashboard(c *gin.Context) {
 	stats, err := h.svc.GetDashboardStats(c.Request.Context())
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, stats)
@@ -44,7 +44,7 @@ func (h *Handler) ListIncidents(c *gin.Context) {
 
 	list, total, err := h.svc.ListIncidents(c.Request.Context(), pgPtr)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -69,7 +69,7 @@ func (h *Handler) ResolveIncident(c *gin.Context) {
 	id := c.Param("id")
 	err := h.svc.ResolveIncident(c.Request.Context(), id)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, gin.H{"message": "incident resolved"})
@@ -83,7 +83,7 @@ func (h *Handler) UpdateIncidentStatus(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UpdateIncidentStatus(c.Request.Context(), id, req.Status); err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, gin.H{"message": "incident status updated"})
@@ -97,7 +97,7 @@ func (h *Handler) AssignIncident(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AssignIncident(c.Request.Context(), id, req.Assignee); err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, gin.H{"message": "incident assigned"})
@@ -112,7 +112,7 @@ func (h *Handler) AddToBlocklist(c *gin.Context) {
 
 	item, err := h.svc.AddToBlocklist(c.Request.Context(), req, currentUserLabel(c))
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.Created(c, item)
@@ -121,7 +121,7 @@ func (h *Handler) AddToBlocklist(c *gin.Context) {
 func (h *Handler) ListBlocklist(c *gin.Context) {
 	list, err := h.svc.ListBlocklist(c.Request.Context())
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, list)
@@ -131,7 +131,7 @@ func (h *Handler) RemoveFromBlocklist(c *gin.Context) {
 	id := c.Param("id")
 	err := h.svc.RemoveFromBlocklist(c.Request.Context(), id)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, gin.H{"message": "removed from blocklist"})
@@ -140,7 +140,7 @@ func (h *Handler) RemoveFromBlocklist(c *gin.Context) {
 func (h *Handler) ListVulnerabilities(c *gin.Context) {
 	list, err := h.svc.ListVulnerabilities(c.Request.Context())
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, list)
@@ -155,7 +155,7 @@ func (h *Handler) UpdateVulnerabilityStatus(c *gin.Context) {
 	}
 	v, err := h.svc.UpdateVulnerabilityStatus(c.Request.Context(), id, req.Status)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, v)
@@ -164,7 +164,7 @@ func (h *Handler) UpdateVulnerabilityStatus(c *gin.Context) {
 func (h *Handler) GetAttackMap(c *gin.Context) {
 	nodes, err := h.svc.GetAttackMap(c.Request.Context())
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, nodes)

@@ -104,38 +104,6 @@ func WSAuth(jwtSecret string) gin.HandlerFunc {
 	}
 }
 
-// OptionalAuth attempts to authenticate but does not abort on failure.
-func OptionalAuth(jwtSecret string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.Next()
-			return
-		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.Next()
-			return
-		}
-
-		claims := &Claims{}
-		token, err := jwt.ParseWithClaims(parts[1], claims, func(t *jwt.Token) (interface{}, error) {
-			return []byte(jwtSecret), nil
-		})
-
-		if err == nil && token.Valid {
-			c.Set(ContextKeyUserID, claims.UserID)
-			c.Set(ContextKeyEmail, claims.Email)
-			c.Set(ContextKeyRole, claims.Role)
-			c.Set(ContextKeyClearanceLevel, claims.ClearanceLevel)
-			c.Set(ContextKeyClaims, claims)
-		}
-
-		c.Next()
-	}
-}
-
 // GetUserID extracts the user ID from the gin context (set by Auth middleware).
 func GetUserID(c *gin.Context) string {
 	v, _ := c.Get(ContextKeyUserID)

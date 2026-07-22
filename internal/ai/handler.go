@@ -46,7 +46,7 @@ func (h *Handler) History(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	list, err := h.svc.History(c.Request.Context(), userID, limit)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"regexp"
 	"time"
 
 	"intelligence-platform/pkg/pagination"
@@ -93,7 +94,9 @@ func (s *Service) Log(ctx context.Context, userID, action, resource, ip, result 
 func (s *Service) List(ctx context.Context, search, action string, pg *pagination.Params) ([]*AuditLog, int64, error) {
 	filter := bson.M{}
 	if search != "" {
-		rx := bson.M{"$regex": search, "$options": "i"}
+		// QuoteMeta: the search term is a literal, never a user-supplied
+		// regex (prevents ReDoS / pattern injection).
+		rx := bson.M{"$regex": regexp.QuoteMeta(search), "$options": "i"}
 		filter["$or"] = bson.A{
 			bson.M{"user_id": rx},
 			bson.M{"action": rx},

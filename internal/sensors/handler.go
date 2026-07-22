@@ -22,7 +22,7 @@ func NewHandler(svc *Service) *Handler {
 func (h *Handler) List(c *gin.Context) {
 	list, err := h.svc.List(c.Request.Context(), c.Query("type"), c.Query("status"))
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, list)
@@ -50,7 +50,7 @@ func (h *Handler) Detections(c *gin.Context) {
 		pg, _ := pagination.Parse(pageStr, c.Query("limit"))
 		list, total, err := h.svc.DetectionsPaginated(c.Request.Context(), sensorID, entityID, pg)
 		if err != nil {
-			errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+			errors.Internal(c, err)
 			return
 		}
 		errors.OKWithMeta(c, list, pg.ToMeta(total))
@@ -60,7 +60,7 @@ func (h *Handler) Detections(c *gin.Context) {
 	limit, _ := strconv.ParseInt(c.Query("limit"), 10, 64)
 	list, err := h.svc.Detections(c.Request.Context(), sensorID, entityID, limit)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, list)
@@ -75,7 +75,7 @@ func (h *Handler) Create(c *gin.Context) {
 	}
 	out, err := h.svc.Create(c.Request.Context(), in)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.Created(c, out)
@@ -99,7 +99,7 @@ func (h *Handler) Update(c *gin.Context) {
 // Delete godoc - DELETE /api/v1/sensors/:id (admin)
 func (h *Handler) Delete(c *gin.Context) {
 	if err := h.svc.Delete(c.Request.Context(), c.Param("id")); err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, gin.H{"deleted": c.Param("id")})
@@ -109,7 +109,7 @@ func (h *Handler) Delete(c *gin.Context) {
 func (h *Handler) Stats(c *gin.Context) {
 	st, err := h.svc.Stats(c.Request.Context())
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, st)

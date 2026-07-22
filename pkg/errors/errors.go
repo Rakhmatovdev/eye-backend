@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 // AppError represents a structured API error.
@@ -69,6 +70,18 @@ func Fail(c *gin.Context, err *AppError) {
 // FailMsg sends an error response with a custom message.
 func FailMsg(c *gin.Context, code int, message string) {
 	c.JSON(code, Response{Success: false, Error: &AppError{Code: code, Message: message}})
+}
+
+// Internal responds with a generic 500 — the real error is only logged
+// server-side (via the global zap logger set in main), never echoed to the
+// client, so DB/driver internals can't leak through API error messages.
+func Internal(c *gin.Context, err error) {
+	zap.L().Error("internal error",
+		zap.String("method", c.Request.Method),
+		zap.String("path", c.FullPath()),
+		zap.Error(err),
+	)
+	Fail(c, ErrInternal)
 }
 
 // Abort sends an error and aborts the gin chain.

@@ -20,7 +20,7 @@ func NewHandler(svc *Service) *Handler {
 func (h *Handler) ListAgents(c *gin.Context) {
 	list, err := h.svc.ListAgents(c.Request.Context())
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, list)
@@ -47,7 +47,7 @@ func (h *Handler) CreateCommand(c *gin.Context) {
 	userID := mw.GetUserID(c)
 	cmd, err := h.svc.CreateCommand(c.Request.Context(), agentID, req.Command, userID)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.Created(c, cmd)
@@ -57,7 +57,7 @@ func (h *Handler) ListCommands(c *gin.Context) {
 	agentID := c.Param("id")
 	list, err := h.svc.ListCommands(c.Request.Context(), agentID)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 	errors.OK(c, list)

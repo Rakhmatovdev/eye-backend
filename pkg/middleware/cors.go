@@ -11,11 +11,13 @@ import (
 
 // CORS returns a configured CORS middleware.
 //
-// An origin is allowed if it is in the explicitly configured list, or (to keep
-// local development frictionless) if it is a loopback or private-LAN address on
-// any port — this lets the app be opened via localhost or the machine's LAN IP
-// (e.g. from a phone) without hardcoding an address that changes with DHCP.
-func CORS(allowedOrigins []string) gin.HandlerFunc {
+// An origin is allowed if it is in the explicitly configured list, or — only
+// when allowPrivateNetworks is set (i.e. outside production) — if it is a
+// loopback or private-LAN address on any port; this lets the app be opened
+// via localhost or the machine's LAN IP (e.g. from a phone) without
+// hardcoding an address that changes with DHCP. In production only the
+// explicit allowlist counts.
+func CORS(allowedOrigins []string, allowPrivateNetworks bool) gin.HandlerFunc {
 	allowed := make(map[string]bool, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		allowed[o] = true
@@ -26,7 +28,7 @@ func CORS(allowedOrigins []string) gin.HandlerFunc {
 			if allowed[origin] {
 				return true
 			}
-			return isLocalOrPrivateOrigin(origin)
+			return allowPrivateNetworks && isLocalOrPrivateOrigin(origin)
 		},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Request-ID", "X-Forwarded-For"},

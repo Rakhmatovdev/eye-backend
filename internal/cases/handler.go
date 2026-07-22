@@ -29,7 +29,7 @@ func (h *Handler) Create(c *gin.Context) {
 	userID := mw.GetUserID(c)
 	res, err := h.svc.Create(c.Request.Context(), userID, req)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -40,7 +40,7 @@ func (h *Handler) List(c *gin.Context) {
 	userID := mw.GetUserID(c)
 	list, err := h.svc.List(c.Request.Context(), userID)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -73,7 +73,7 @@ func (h *Handler) Update(c *gin.Context) {
 			errors.Fail(c, errors.ErrNotFound)
 			return
 		}
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -88,7 +88,7 @@ func (h *Handler) Delete(c *gin.Context) {
 			errors.Fail(c, errors.ErrNotFound)
 			return
 		}
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *Handler) RemoveEntity(c *gin.Context) {
 			errors.Fail(c, errors.ErrNotFound)
 			return
 		}
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *Handler) GetEntities(c *gin.Context) {
 	id := c.Param("id")
 	list, err := h.svc.GetEntities(c.Request.Context(), id)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 
@@ -133,7 +133,7 @@ func (h *Handler) AddEntity(c *gin.Context) {
 	userID := mw.GetUserID(c)
 	err := h.svc.AddEntity(c.Request.Context(), id, req.EntityID, userID)
 	if err != nil {
-		errors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		errors.Internal(c, err)
 		return
 	}
 

@@ -28,7 +28,7 @@ func (h *Handler) CreateEntity(c *gin.Context) {
 
 	e, err := h.svc.CreateEntity(c.Request.Context(), req)
 	if err != nil {
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -59,7 +59,7 @@ func (h *Handler) ListEntities(c *gin.Context) {
 
 	list, total, err := h.svc.ListEntities(c.Request.Context(), search, entType, pgPtr)
 	if err != nil {
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -85,7 +85,7 @@ func (h *Handler) UpdateEntity(c *gin.Context) {
 			apperrors.Fail(c, apperrors.ErrNotFound)
 			return
 		}
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -100,7 +100,7 @@ func (h *Handler) DeleteEntity(c *gin.Context) {
 			apperrors.Fail(c, apperrors.ErrNotFound)
 			return
 		}
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (h *Handler) CreateRelationship(c *gin.Context) {
 
 	r, err := h.svc.CreateRelationship(c.Request.Context(), req)
 	if err != nil {
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *Handler) DeleteRelationship(c *gin.Context) {
 			apperrors.Fail(c, apperrors.ErrNotFound)
 			return
 		}
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -147,7 +147,7 @@ func (h *Handler) Expand(c *gin.Context) {
 
 	nodes, edges, err := h.svc.Expand(c.Request.Context(), req.NodeID)
 	if err != nil {
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
@@ -166,7 +166,7 @@ func (h *Handler) FindPath(c *gin.Context) {
 
 	nodes, edges, err := h.svc.FindPath(c.Request.Context(), req.StartID, req.EndID)
 	if err != nil {
-		apperrors.FailMsg(c, http.StatusInternalServerError, err.Error())
+		apperrors.Internal(c, err)
 		return
 	}
 
