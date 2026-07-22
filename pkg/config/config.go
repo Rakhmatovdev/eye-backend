@@ -86,6 +86,11 @@ func (c *Config) IsProduction() bool {
 	return strings.EqualFold(c.Environment, "production") || strings.EqualFold(c.Environment, "prod")
 }
 
+// IsDevelopment reports whether the app is running in a development environment.
+func (c *Config) IsDevelopment() bool {
+	return strings.EqualFold(c.Environment, "development") || strings.EqualFold(c.Environment, "dev")
+}
+
 func isWeakSecret(s string) bool {
 	return len(s) < 32 || strings.Contains(s, "change-in-production") || strings.HasPrefix(s, "default-")
 }

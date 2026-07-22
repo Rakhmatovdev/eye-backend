@@ -59,6 +59,29 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"new_password" binding:"required,min=8"`
 }
 
+// ForgotPasswordRequest is the body for POST /auth/forgot-password.
+type ForgotPasswordRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+// ForgotPasswordResponse is returned by POST /auth/forgot-password. It is
+// deliberately generic (identical shape whether or not the email is
+// registered) to avoid leaking which addresses exist. ResetToken/ResetLink
+// are only populated outside production — there is no email sender yet, so
+// this is how the reset flow stays testable; the real value is always also
+// written to the server log.
+type ForgotPasswordResponse struct {
+	Message    string `json:"message"`
+	ResetToken string `json:"reset_token,omitempty"`
+	ResetLink  string `json:"reset_link,omitempty"`
+}
+
+// ResetPasswordRequest is the body for POST /auth/reset-password.
+type ResetPasswordRequest struct {
+	Token       string `json:"token" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required,min=8"`
+}
+
 // TokenPair holds both access and refresh tokens.
 type TokenPair struct {
 	AccessToken  string

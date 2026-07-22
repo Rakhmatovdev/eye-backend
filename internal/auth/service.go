@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -20,8 +22,10 @@ import (
 const mfaIssuer = "Ko'z Intelligence Platform"
 
 const (
-	accessTokenTTL  = 15 * time.Minute
-	refreshTokenTTL = 7 * 24 * time.Hour
+	accessTokenTTL     = 15 * time.Minute
+	refreshTokenTTL    = 7 * 24 * time.Hour
+	passwordResetTTL   = 15 * time.Minute
+	passwordResetBytes = 32
 )
 
 // Service handles authentication business logic.
@@ -30,6 +34,10 @@ type Service struct {
 	jwtSecret        string
 	jwtRefreshSecret string
 	log              *zap.Logger
+	// devMode gates whether ForgotPassword echoes the raw reset token/link in
+	// its response. Outside development there is no email sender yet, so the
+	// token is only ever written to the server log.
+	devMode bool
 }
 
 // refreshToken is the stored refresh-token document (one per user, TTL-expired).
@@ -39,18 +47,35 @@ type refreshToken struct {
 	ExpiresAt time.Time `bson:"expires_at"`
 }
 
+// passwordResetToken is the stored password-reset-token document, keyed by
+// the SHA-256 hash of the (single-use) random token handed to the user, and
+// TTL-expired via seed.go's index on expires_at.
+type passwordResetToken struct {
+	TokenHash string    `bson:"_id"`
+	UserID    string    `bson:"user_id"`
+	ExpiresAt time.Time `bson:"expires_at"`
+	Used      bool      `bson:"used"`
+}
+
 // NewService creates a new auth service.
-func NewService(db *mongo.Database, jwtSecret, jwtRefreshSecret string, log *zap.Logger) *Service {
+func NewService(db *mongo.Database, jwtSecret, jwtRefreshSecret string, log *zap.Logger, devMode bool) *Service {
 	return &Service{
 		db:               db,
 		jwtSecret:        jwtSecret,
 		jwtRefreshSecret: jwtRefreshSecret,
 		log:              log,
+		devMode:          devMode,
 	}
 }
 
-func (s *Service) users() *mongo.Collection         { return s.db.Collection("users") }
-func (s *Service) refreshTokens() *mongo.Collection { return s.db.Collection("refresh_tokens") }
+func (s *Service) users() *mongo.Collection               { return s.db.Collection("users") }
+func (s *Service) refreshTokens() *mongo.Collection       { return s.db.Collection("refresh_tokens") }
+func (s *Service) passwordResetTokens() *mongo.Collection { return s.db.Collection("password_reset_tokens") }
+
+func hashResetToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
 
 // Login validates credentials and returns a token pair. If the account has MFA
 // enabled, a valid TOTP code must be supplied; when it is missing the response
@@ -180,6 +205,93 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 	// Revoke refresh tokens so other sessions die.
 	if _, err := s.refreshTokens().DeleteOne(ctx, bson.M{"_id": userID}); err != nil {
 		s.log.Error("failed to revoke refresh token after password change", zap.Error(err))
+	}
+
+	return nil
+}
+
+// ForgotPassword issues a single-use, TTL-expiring password-reset token for
+// the given email. It always returns a generic success response — whether or
+// not the email is registered — to avoid leaking which addresses exist.
+// There is no email sender configured yet, so the raw token/link is written
+// to the server log (and, only in development, echoed in the response) so
+// the flow can be exercised end-to-end without one.
+func (s *Service) ForgotPassword(ctx context.Context, email string) (*ForgotPasswordResponse, error) {
+	resp := &ForgotPasswordResponse{
+		Message: "if an account exists for that email, a password reset link has been sent",
+	}
+
+	user, err := s.getUserByEmail(ctx, email)
+	if err != nil {
+		return resp, nil
+	}
+
+	token, err := crypto.GenerateToken(passwordResetBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate reset token: %w", err)
+	}
+
+	doc := passwordResetToken{
+		TokenHash: hashResetToken(token),
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(passwordResetTTL),
+	}
+	if _, err := s.passwordResetTokens().InsertOne(ctx, doc); err != nil {
+		return nil, fmt.Errorf("failed to store reset token: %w", err)
+	}
+
+	link := fmt.Sprintf("/reset-password?token=%s", token)
+	s.log.Info("password reset requested",
+		zap.String("email", email),
+		zap.String("reset_token", token),
+		zap.String("reset_link", link),
+	)
+
+	if s.devMode {
+		resp.ResetToken = token
+		resp.ResetLink = link
+	}
+	return resp, nil
+}
+
+// ErrInvalidResetToken is returned by ResetPassword when the token is
+// unknown, already used, or expired — the only failure the client may see
+// verbatim; anything else is an internal error the handler must not echo.
+var ErrInvalidResetToken = errors.New("invalid or expired reset token")
+
+// ResetPassword validates a reset token issued by ForgotPassword, sets the
+// new (bcrypt-hashed) password, marks the token used, and revokes the user's
+// refresh token so other sessions are forced to re-authenticate.
+func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) error {
+	if len(newPassword) < 8 {
+		return fmt.Errorf("new password must be at least 8 characters")
+	}
+
+	// Atomically claim the token (used=false → true) so two concurrent resets
+	// with the same token can't both pass validation.
+	var stored passwordResetToken
+	err := s.passwordResetTokens().FindOneAndUpdate(ctx,
+		bson.M{
+			"_id":        hashResetToken(token),
+			"used":       false,
+			"expires_at": bson.M{"$gt": time.Now()},
+		},
+		bson.M{"$set": bson.M{"used": true}},
+	).Decode(&stored)
+	if err != nil {
+		return ErrInvalidResetToken
+	}
+
+	hash, err := crypto.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if _, err := s.users().UpdateByID(ctx, stored.UserID, bson.M{"$set": bson.M{"password_hash": hash}}); err != nil {
+		return fmt.Errorf("failed to update password: %w", err)
+	}
+	if _, err := s.refreshTokens().DeleteOne(ctx, bson.M{"_id": stored.UserID}); err != nil {
+		s.log.Error("failed to revoke refresh token after password reset", zap.Error(err))
 	}
 
 	return nil

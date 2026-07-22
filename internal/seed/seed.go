@@ -67,6 +67,13 @@ func ensureIndexes(ctx context.Context, db *mongo.Database) error {
 	}); err != nil {
 		return err
 	}
+	// TTL index: password reset tokens auto-expire at their expires_at instant.
+	if _, err := db.Collection("password_reset_tokens").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "expires_at", Value: 1}},
+		Options: options.Index().SetExpireAfterSeconds(0),
+	}); err != nil {
+		return err
+	}
 	if _, err := db.Collection("audit_logs").Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys: bson.D{{Key: "id", Value: -1}},
 	}); err != nil {

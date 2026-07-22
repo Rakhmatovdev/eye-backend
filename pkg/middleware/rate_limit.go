@@ -69,3 +69,58 @@ func ClearFailedLogins(identifier string) {
 	defer loginMu.Unlock()
 	delete(loginAttempts, identifier)
 }
+
+// In-memory forgot-password request throttling, same technique as the login
+// lockout above but counting every request (not just failures) since a
+// forgot-password call always "succeeds" from the caller's point of view.
+
+const (
+	maxForgotPasswordRequests = 3
+	forgotPasswordWindow      = time.Hour
+)
+
+type forgotPasswordAttempt struct {
+	count     int
+	windowEnd time.Time
+}
+
+var (
+	forgotMu       sync.Mutex
+	forgotAttempts = make(map[string]*forgotPasswordAttempt)
+)
+
+// CheckForgotPasswordLockout reports whether an identifier has exceeded the
+// forgot-password request quota for the current window and, if so, how long
+// until the window resets.
+func CheckForgotPasswordLockout(identifier string) (bool, time.Duration, error) {
+	forgotMu.Lock()
+	defer forgotMu.Unlock()
+
+	a := forgotAttempts[identifier]
+	if a == nil {
+		return false, 0, nil
+	}
+	now := time.Now()
+	if now.After(a.windowEnd) {
+		return false, 0, nil
+	}
+	if a.count >= maxForgotPasswordRequests {
+		return true, time.Until(a.windowEnd), nil
+	}
+	return false, 0, nil
+}
+
+// RecordForgotPasswordAttempt increments the request counter for an
+// identifier, starting a new window if the previous one has expired.
+func RecordForgotPasswordAttempt(identifier string) {
+	forgotMu.Lock()
+	defer forgotMu.Unlock()
+
+	now := time.Now()
+	a := forgotAttempts[identifier]
+	if a == nil || now.After(a.windowEnd) {
+		a = &forgotPasswordAttempt{windowEnd: now.Add(forgotPasswordWindow)}
+		forgotAttempts[identifier] = a
+	}
+	a.count++
+}

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	stderrors "errors"
 	"net/http"
 
 	"intelligence-platform/internal/audit"
@@ -123,6 +124,57 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 
 	h.logAudit(c, userID, "change_password", "success")
 	errors.OK(c, gin.H{"message": "password changed successfully"})
+}
+
+// ForgotPassword godoc
+// POST /api/v1/auth/forgot-password
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var req ForgotPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errors.FailMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if locked, remaining, _ := mw.CheckForgotPasswordLockout(req.Email); locked {
+		errors.FailMsg(c, http.StatusTooManyRequests,
+			"too many reset requests, try again in "+remaining.String())
+		return
+	}
+	mw.RecordForgotPasswordAttempt(req.Email)
+
+	resp, err := h.svc.ForgotPassword(c.Request.Context(), req.Email)
+	if err != nil {
+		errors.FailMsg(c, http.StatusInternalServerError, "failed to process request")
+		return
+	}
+
+	h.logAudit(c, req.Email, "forgot_password", "requested")
+	errors.OK(c, resp)
+}
+
+// ResetPassword godoc
+// POST /api/v1/auth/reset-password
+func (h *Handler) ResetPassword(c *gin.Context) {
+	var req ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errors.FailMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.svc.ResetPassword(c.Request.Context(), req.Token, req.NewPassword); err != nil {
+		h.logAudit(c, "", "reset_password", "failure")
+		// Only the invalid-token error may reach the client verbatim; anything
+		// else is internal detail (e.g. a DB error) that must not be echoed.
+		if stderrors.Is(err, ErrInvalidResetToken) {
+			errors.FailMsg(c, http.StatusBadRequest, err.Error())
+		} else {
+			errors.FailMsg(c, http.StatusInternalServerError, "failed to reset password")
+		}
+		return
+	}
+
+	h.logAudit(c, "", "reset_password", "success")
+	errors.OK(c, gin.H{"message": "password reset successfully"})
 }
 
 // EnrollMFA godoc

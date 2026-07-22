@@ -69,7 +69,7 @@ func main() {
 
 	// 4. Init Services
 	rbacSvc := accesscontrol.NewRBACService(db, log)
-	authSvc := auth.NewService(db, cfg.JWTSecret, cfg.JWTRefreshSecret, log)
+	authSvc := auth.NewService(db, cfg.JWTSecret, cfg.JWTRefreshSecret, log, cfg.IsDevelopment())
 	usersSvc := users.NewService(db, log)
 	auditSvc := audit.NewService(db, log)
 	entitiesSvc := entities.NewService(db, log)
@@ -128,6 +128,8 @@ func main() {
 		{
 			authGroup.POST("/login", authHandler.Login)
 			authGroup.POST("/refresh", authHandler.Refresh)
+			authGroup.POST("/forgot-password", authHandler.ForgotPassword)
+			authGroup.POST("/reset-password", authHandler.ResetPassword)
 		}
 	}
 
