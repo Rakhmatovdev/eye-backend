@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"intelligence-platform/pkg/email"
+
 	"github.com/spf13/viper"
 )
 
@@ -25,6 +27,19 @@ type Config struct {
 	OllamaModel     string `mapstructure:"OLLAMA_MODEL"`
 	AnthropicAPIKey string `mapstructure:"ANTHROPIC_API_KEY"`
 	AnthropicModel  string `mapstructure:"ANTHROPIC_MODEL"`
+
+	// Outbound email (password reset). When SMTPHost is empty, the email
+	// package falls back to a no-op sender that only logs (no real
+	// dependency required for local dev/tests).
+	SMTPHost     string `mapstructure:"SMTP_HOST"`
+	SMTPPort     string `mapstructure:"SMTP_PORT"`
+	SMTPUsername string `mapstructure:"SMTP_USERNAME"`
+	SMTPPassword string `mapstructure:"SMTP_PASSWORD"`
+	SMTPFrom     string `mapstructure:"SMTP_FROM"`
+
+	// AppBaseURL is the frontend origin used to build links embedded in
+	// emails (e.g. the password-reset link).
+	AppBaseURL string `mapstructure:"APP_BASE_URL"`
 }
 
 // Load reads configuration from .env file and environment variables.
@@ -44,6 +59,8 @@ func Load() (*Config, error) {
 	viper.SetDefault("OLLAMA_URL", "http://localhost:11434")
 	viper.SetDefault("OLLAMA_MODEL", "llama3.2")
 	viper.SetDefault("ANTHROPIC_MODEL", "claude-opus-4-8")
+	viper.SetDefault("SMTP_PORT", "587")
+	viper.SetDefault("APP_BASE_URL", email.DefaultAppBaseURL)
 
 	if err := viper.ReadInConfig(); err != nil {
 		// Not fatal — env vars may be set directly

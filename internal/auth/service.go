@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"intelligence-platform/pkg/crypto"
+	"intelligence-platform/pkg/email"
 	"intelligence-platform/pkg/middleware"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -35,9 +36,15 @@ type Service struct {
 	jwtRefreshSecret string
 	log              *zap.Logger
 	// devMode gates whether ForgotPassword echoes the raw reset token/link in
-	// its response. Outside development there is no email sender yet, so the
-	// token is only ever written to the server log.
+	// its response, and whether the token is also written to the server log
+	// (never do either outside development — see ForgotPassword).
 	devMode bool
+	// emailSender delivers the password-reset link. Falls back to a no-op
+	// (logging) sender when SMTP isn't configured — see pkg/email.
+	emailSender email.Sender
+	// appBaseURL is the frontend origin used to build the link embedded in
+	// the reset email, e.g. {appBaseURL}/reset-password?token=...
+	appBaseURL string
 }
 
 // refreshToken is the stored refresh-token document (one per user, TTL-expired).
@@ -57,14 +64,25 @@ type passwordResetToken struct {
 	Used      bool      `bson:"used"`
 }
 
-// NewService creates a new auth service.
-func NewService(db *mongo.Database, jwtSecret, jwtRefreshSecret string, log *zap.Logger, devMode bool) *Service {
+// NewService creates a new auth service. sender delivers password-reset
+// emails (pass a *email.NoopSender to disable real delivery); appBaseURL is
+// used to build the link in that email and defaults to
+// email.DefaultAppBaseURL when empty.
+func NewService(db *mongo.Database, jwtSecret, jwtRefreshSecret string, log *zap.Logger, devMode bool, sender email.Sender, appBaseURL string) *Service {
+	if sender == nil {
+		sender = &email.NoopSender{}
+	}
+	if appBaseURL == "" {
+		appBaseURL = email.DefaultAppBaseURL
+	}
 	return &Service{
 		db:               db,
 		jwtSecret:        jwtSecret,
 		jwtRefreshSecret: jwtRefreshSecret,
 		log:              log,
 		devMode:          devMode,
+		emailSender:      sender,
+		appBaseURL:       appBaseURL,
 	}
 }
 
@@ -211,17 +229,19 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 }
 
 // ForgotPassword issues a single-use, TTL-expiring password-reset token for
-// the given email. It always returns a generic success response — whether or
-// not the email is registered — to avoid leaking which addresses exist.
-// There is no email sender configured yet, so the raw token/link is written
-// to the server log (and, only in development, echoed in the response) so
-// the flow can be exercised end-to-end without one.
-func (s *Service) ForgotPassword(ctx context.Context, email string) (*ForgotPasswordResponse, error) {
+// the given email and emails the reset link (via s.emailSender — an SMTP
+// sender when configured, otherwise a no-op logging fallback). It always
+// returns a generic success response — whether or not the email is
+// registered — to avoid leaking which addresses exist. The raw token/link is
+// only ever written to the server log in development (see s.devMode); it is
+// never logged in production, since it grants a password reset to whoever
+// reads it.
+func (s *Service) ForgotPassword(ctx context.Context, userEmail string) (*ForgotPasswordResponse, error) {
 	resp := &ForgotPasswordResponse{
 		Message: "if an account exists for that email, a password reset link has been sent",
 	}
 
-	user, err := s.getUserByEmail(ctx, email)
+	user, err := s.getUserByEmail(ctx, userEmail)
 	if err != nil {
 		return resp, nil
 	}
@@ -241,11 +261,30 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) (*ForgotPass
 	}
 
 	link := fmt.Sprintf("/reset-password?token=%s", token)
-	s.log.Info("password reset requested",
-		zap.String("email", email),
-		zap.String("reset_token", token),
-		zap.String("reset_link", link),
+	fullLink := fmt.Sprintf("%s%s", s.appBaseURL, link)
+
+	// Only ever logged server-side in development — this token is
+	// equivalent to the user's password until it's used or expires.
+	if s.devMode {
+		s.log.Info("password reset requested",
+			zap.String("email", userEmail),
+			zap.String("reset_token", token),
+			zap.String("reset_link", link),
+		)
+	}
+
+	body := fmt.Sprintf(
+		"A password reset was requested for your account.\n\n"+
+			"Use the link below to set a new password. It expires in %s.\n\n%s\n\n"+
+			"If you did not request this, you can safely ignore this email.",
+		passwordResetTTL, fullLink,
 	)
+	if err := s.emailSender.Send(userEmail, "Reset your password", body); err != nil {
+		// Best-effort: a delivery failure shouldn't fail the request (which
+		// must return the same generic response either way), but it should
+		// be visible in the logs.
+		s.log.Error("failed to send password reset email", zap.Error(err))
+	}
 
 	if s.devMode {
 		resp.ResetToken = token

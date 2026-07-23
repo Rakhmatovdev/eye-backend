@@ -2,8 +2,7 @@ package entities
 
 import (
 	"context"
-	"fmt"
-	"strings"
+	"regexp"
 	"time"
 
 	"intelligence-platform/pkg/pagination"
@@ -67,42 +66,8 @@ func (s *Service) ListEntities(ctx context.Context, search, entType string, pg *
 		filter["type"] = entType
 	}
 
-	// Free-form property search is done in-application (mirrors the old
-	// `properties::text ILIKE` behaviour across arbitrary JSON values), so it
-	// can't be combined with a Mongo-level skip/limit. Paginate in memory
-	// instead when a search term is present.
 	if search != "" {
-		cur, err := s.entities().Find(ctx, filter)
-		if err != nil {
-			return nil, 0, err
-		}
-		defer cur.Close(ctx)
-
-		var all []*Entity
-		if err := cur.All(ctx, &all); err != nil {
-			return nil, 0, err
-		}
-
-		needle := strings.ToLower(search)
-		var matched []*Entity
-		for _, e := range all {
-			if entityMatches(e, needle) {
-				matched = append(matched, e)
-			}
-		}
-		total := int64(len(matched))
-		if pg == nil {
-			return matched, total, nil
-		}
-		start := pg.Skip()
-		if start > total {
-			start = total
-		}
-		end := start + pg.Take()
-		if end > total {
-			end = total
-		}
-		return matched[start:end], total, nil
+		return s.searchEntities(ctx, filter, search, pg)
 	}
 
 	if pg == nil {
@@ -210,26 +175,112 @@ func (s *Service) DeleteRelationship(ctx context.Context, id string) error {
 	return nil
 }
 
-func entityMatches(e *Entity, needle string) bool {
-	if strings.Contains(strings.ToLower(e.Type), needle) {
-		return true
-	}
-	for _, v := range e.Properties {
-		if strings.Contains(strings.ToLower(valueToString(v)), needle) {
-			return true
-		}
-	}
-	return false
-}
+// searchEntities implements the `search` query param as a real Mongo query
+// (an aggregation pipeline) instead of loading every entity matching `filter`
+// into the application and filtering in Go. It preserves the previous
+// in-application semantics exactly: an entity matches when its `type` field
+// or the stringified value of any key under its free-form `properties`
+// sub-document contains the search term, case-insensitively. `properties` is
+// arbitrary/schemaless BSON, so rather than requiring a known field name we
+// use $objectToArray to enumerate its keys and $regexMatch each stringified
+// value — the query-level equivalent of the old per-entity Go loop. The
+// wildcard index on properties.$** (internal/seed/seed.go) lets Mongo use an
+// index for the `type`-only and exact-property-path cases; the free-form
+// per-value scan still requires examining each candidate document, same as
+// any schemaless "search every field" query.
+//
+// The search term is escaped with regexp.QuoteMeta before being used as a
+// Mongo regex — same ReDoS-prevention pattern as the audit and users search
+// (internal/audit/service.go, internal/users/service.go): a literal
+// substring match, never a user-supplied regex.
+func (s *Service) searchEntities(ctx context.Context, filter bson.M, search string, pg *pagination.Params) ([]*Entity, int64, error) {
+	rx := regexp.QuoteMeta(search)
 
-func valueToString(v interface{}) string {
-	if v == nil {
-		return ""
+	pipeline := bson.A{}
+	if len(filter) > 0 {
+		pipeline = append(pipeline, bson.M{"$match": filter})
 	}
-	if s, ok := v.(string); ok {
-		return s
+	pipeline = append(pipeline,
+		// For each entity, collect the properties entries whose value
+		// (coerced to a string; non-coercible types like arrays/embedded
+		// docs fall back to "" and simply never match, same as an
+		// unmatched substring) contains the search term.
+		bson.M{"$addFields": bson.M{
+			"_prop_matches": bson.M{
+				"$filter": bson.M{
+					"input": bson.M{"$objectToArray": "$properties"},
+					"as":    "kv",
+					"cond": bson.M{
+						"$regexMatch": bson.M{
+							"input": bson.M{"$convert": bson.M{
+								"input":   "$$kv.v",
+								"to":      "string",
+								"onError": "",
+								"onNull":  "",
+							}},
+							"regex":   rx,
+							"options": "i",
+						},
+					},
+				},
+			},
+		}},
+		bson.M{"$match": bson.M{
+			"$or": bson.A{
+				bson.M{"type": bson.M{"$regex": rx, "$options": "i"}},
+				bson.M{"$expr": bson.M{"$gt": bson.A{bson.M{"$size": "$_prop_matches"}, 0}}},
+			},
+		}},
+		bson.M{"$unset": "_prop_matches"},
+	)
+
+	if pg == nil {
+		cur, err := s.entities().Aggregate(ctx, pipeline)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer cur.Close(ctx)
+
+		list := []*Entity{}
+		if err := cur.All(ctx, &list); err != nil {
+			return nil, 0, err
+		}
+		return list, 0, nil
 	}
-	return fmt.Sprintf("%v", v)
+
+	facetPipeline := append(pipeline, bson.M{"$facet": bson.M{
+		"data":  bson.A{bson.M{"$skip": pg.Skip()}, bson.M{"$limit": pg.Take()}},
+		"total": bson.A{bson.M{"$count": "count"}},
+	}})
+
+	cur, err := s.entities().Aggregate(ctx, facetPipeline)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer cur.Close(ctx)
+
+	var facetResult []struct {
+		Data  []*Entity `bson:"data"`
+		Total []struct {
+			Count int64 `bson:"count"`
+		} `bson:"total"`
+	}
+	if err := cur.All(ctx, &facetResult); err != nil {
+		return nil, 0, err
+	}
+	if len(facetResult) == 0 {
+		return []*Entity{}, 0, nil
+	}
+
+	res := facetResult[0]
+	if res.Data == nil {
+		res.Data = []*Entity{}
+	}
+	var total int64
+	if len(res.Total) > 0 {
+		total = res.Total[0].Count
+	}
+	return res.Data, total, nil
 }
 
 func (s *Service) CreateRelationship(ctx context.Context, req CreateRelationshipRequest) (*Relationship, error) {

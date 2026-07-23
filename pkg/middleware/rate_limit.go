@@ -124,3 +124,49 @@ func RecordForgotPasswordAttempt(identifier string) {
 	}
 	a.count++
 }
+
+// Both in-memory maps above only ever grow on write and are never cleaned up
+// on their own — an identifier that fails a login once, or requests a
+// password reset once, keeps its entry forever even after its window has
+// long since expired. A background sweep purges anything whose window (and,
+// for logins, lockout) has passed, so long-running instances don't leak
+// memory in proportion to distinct identifiers seen over their lifetime.
+
+// purgeInterval is how often the background sweep runs.
+const purgeInterval = 10 * time.Minute
+
+func init() {
+	go func() {
+		ticker := time.NewTicker(purgeInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			purgeExpiredRateLimitEntries()
+		}
+	}()
+}
+
+// purgeExpiredRateLimitEntries deletes entries whose tracking window (and,
+// for login lockouts, lockUntil) is entirely in the past. Exported logic is
+// exercised indirectly via CheckLoginLockout/CheckForgotPasswordLockout,
+// which already treat an expired-but-present entry as "not locked" — purging
+// it is a pure memory-reclamation step and never changes observable
+// lockout/quota behaviour.
+func purgeExpiredRateLimitEntries() {
+	now := time.Now()
+
+	loginMu.Lock()
+	for id, a := range loginAttempts {
+		if now.After(a.windowEnd) && now.After(a.lockUntil) {
+			delete(loginAttempts, id)
+		}
+	}
+	loginMu.Unlock()
+
+	forgotMu.Lock()
+	for id, a := range forgotAttempts {
+		if now.After(a.windowEnd) {
+			delete(forgotAttempts, id)
+		}
+	}
+	forgotMu.Unlock()
+}

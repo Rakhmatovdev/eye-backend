@@ -91,6 +91,15 @@ func ensureIndexes(ctx context.Context, db *mongo.Database) error {
 	}); err != nil {
 		return err
 	}
+	// Wildcard index over every field of the free-form `properties`
+	// sub-document, so entity property search (internal/entities
+	// service.go's searchEntities) runs as a real Mongo query instead of
+	// loading every entity into the app and filtering in Go.
+	if _, err := db.Collection("entities").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "properties.$**", Value: 1}},
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 

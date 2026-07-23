@@ -25,6 +25,7 @@ import (
 	"intelligence-platform/internal/users"
 	"intelligence-platform/pkg/config"
 	"intelligence-platform/pkg/database"
+	"intelligence-platform/pkg/email"
 	"intelligence-platform/pkg/logger"
 	mw "intelligence-platform/pkg/middleware"
 
@@ -71,7 +72,14 @@ func main() {
 
 	// 4. Init Services
 	rbacSvc := accesscontrol.NewRBACService(db, log)
-	authSvc := auth.NewService(db, cfg.JWTSecret, cfg.JWTRefreshSecret, log, cfg.IsDevelopment())
+	emailSender := email.NewSender(email.Config{
+		SMTPHost:     cfg.SMTPHost,
+		SMTPPort:     cfg.SMTPPort,
+		SMTPUsername: cfg.SMTPUsername,
+		SMTPPassword: cfg.SMTPPassword,
+		SMTPFrom:     cfg.SMTPFrom,
+	}, log)
+	authSvc := auth.NewService(db, cfg.JWTSecret, cfg.JWTRefreshSecret, log, cfg.IsDevelopment(), emailSender, cfg.AppBaseURL)
 	usersSvc := users.NewService(db, log)
 	auditSvc := audit.NewService(db, log)
 	entitiesSvc := entities.NewService(db, log)
