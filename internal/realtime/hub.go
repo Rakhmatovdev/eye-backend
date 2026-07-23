@@ -131,6 +131,15 @@ func (h *Hub) startSimulation() {
 	}
 }
 
+// BroadcastMessage marshals msg to JSON and pushes it to every connected
+// client (a no-op when nobody is connected). Exported so other packages —
+// e.g. internal/alerts's rule evaluator — can push frames onto the same hub
+// used by the built-in simulated feeds, following the same
+// `{"type": ..., "data": ...}` frame shape.
+func (h *Hub) BroadcastMessage(msg map[string]interface{}) {
+	h.broadcastIfConnected(msg)
+}
+
 func (h *Hub) broadcastIfConnected(msg map[string]interface{}) {
 	bytes, err := json.Marshal(msg)
 	if err != nil {

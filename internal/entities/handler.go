@@ -3,6 +3,7 @@ package entities
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	apperrors "intelligence-platform/pkg/errors"
 	"intelligence-platform/pkg/pagination"
@@ -173,5 +174,90 @@ func (h *Handler) FindPath(c *gin.Context) {
 	apperrors.OK(c, gin.H{
 		"nodes": nodes,
 		"edges": edges,
+	})
+}
+
+// ShortestPath godoc - GET /api/v1/graph/shortest-path?from=&to=
+// The canonical GET form of the BFS path search (POST /graph/path,
+// FindPath above, is kept working for existing callers). Response includes
+// `length`, the number of hops (edges) on the path.
+func (h *Handler) ShortestPath(c *gin.Context) {
+	from := c.Query("from")
+	to := c.Query("to")
+	if from == "" || to == "" {
+		apperrors.FailMsg(c, http.StatusBadRequest, "from and to query params are required")
+		return
+	}
+
+	nodes, edges, err := h.svc.FindPath(c.Request.Context(), from, to)
+	if err != nil {
+		apperrors.Internal(c, err)
+		return
+	}
+
+	apperrors.OK(c, gin.H{
+		"nodes":  nodes,
+		"edges":  edges,
+		"length": len(edges),
+	})
+}
+
+// CommonNeighbors godoc - GET /api/v1/graph/common-neighbors?a=&b=
+// Returns the entities directly connected to both a and b.
+func (h *Handler) CommonNeighbors(c *gin.Context) {
+	a := c.Query("a")
+	b := c.Query("b")
+	if a == "" || b == "" {
+		apperrors.FailMsg(c, http.StatusBadRequest, "a and b query params are required")
+		return
+	}
+
+	ents, err := h.svc.CommonNeighbors(c.Request.Context(), a, b)
+	if err != nil {
+		apperrors.Internal(c, err)
+		return
+	}
+
+	apperrors.OK(c, gin.H{
+		"entities": ents,
+		"count":    len(ents),
+	})
+}
+
+// GetReport godoc - GET /api/v1/entities/:id/report
+// Assembles a full analyst dossier as markdown (no PDF; the frontend renders
+// or downloads the markdown directly).
+func (h *Handler) GetReport(c *gin.Context) {
+	id := c.Param("id")
+	md, err := h.svc.GenerateReport(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			apperrors.Fail(c, apperrors.ErrNotFound)
+			return
+		}
+		apperrors.Internal(c, err)
+		return
+	}
+
+	apperrors.OK(c, gin.H{
+		"markdown":     md,
+		"generated_at": time.Now(),
+		"subject_id":   id,
+	})
+}
+
+// GraphStats godoc - GET /api/v1/graph/stats
+// Returns the top-10 most connected entities plus total node/edge counts.
+func (h *Handler) GraphStats(c *gin.Context) {
+	top, totalNodes, totalEdges, err := h.svc.GraphStats(c.Request.Context())
+	if err != nil {
+		apperrors.Internal(c, err)
+		return
+	}
+
+	apperrors.OK(c, gin.H{
+		"top_connected": top,
+		"total_nodes":   totalNodes,
+		"total_edges":   totalEdges,
 	})
 }

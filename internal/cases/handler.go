@@ -3,6 +3,7 @@ package cases
 import (
 	stderrors "errors"
 	"net/http"
+	"time"
 
 	"intelligence-platform/pkg/errors"
 	mw "intelligence-platform/pkg/middleware"
@@ -120,6 +121,29 @@ func (h *Handler) GetEntities(c *gin.Context) {
 	}
 
 	errors.OK(c, list)
+}
+
+// GetReport godoc - GET /api/v1/cases/:id/report
+// Assembles a full case dossier as markdown: case meta, linked entities each
+// with a mini-summary, and a merged timeline (no PDF; the frontend
+// renders/downloads the markdown directly).
+func (h *Handler) GetReport(c *gin.Context) {
+	id := c.Param("id")
+	md, err := h.svc.GenerateReport(c.Request.Context(), id)
+	if err != nil {
+		if stderrors.Is(err, mongo.ErrNoDocuments) {
+			errors.Fail(c, errors.ErrNotFound)
+			return
+		}
+		errors.Internal(c, err)
+		return
+	}
+
+	errors.OK(c, gin.H{
+		"markdown":     md,
+		"generated_at": time.Now(),
+		"subject_id":   id,
+	})
 }
 
 func (h *Handler) AddEntity(c *gin.Context) {

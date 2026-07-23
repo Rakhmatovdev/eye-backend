@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"intelligence-platform/internal/alerts"
 	"intelligence-platform/pkg/crypto"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -48,6 +49,12 @@ func Run(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
 		return err
 	}
 	if err := seedAgents(ctx, db, log); err != nil {
+		return err
+	}
+	if err := alerts.EnsureIndexes(ctx, db); err != nil {
+		log.Warn("failed to create some alerts indexes", zap.Error(err))
+	}
+	if err := seedAlerts(ctx, db, log); err != nil {
 		return err
 	}
 	return nil
@@ -565,5 +572,76 @@ func seedEvents(ctx context.Context, db *mongo.Database, log *zap.Logger) error 
 		return err
 	}
 	log.Info("seeded timeline events", zap.Int("count", len(docs)))
+	return nil
+}
+
+// seedAlerts inserts the watchlist + alert-rule engine's starter data: two
+// watchlisted entities (ent-009, linked to hostile threat track t-001, and
+// ent-011, a terrorism-finance target), and one enabled rule per type
+// (watchlist_detection, threat_class, risk_threshold — see internal/alerts).
+// A handful of pre-acknowledged sample alerts give the Alerts view some
+// history immediately; the background evaluator (started in cmd/api/main.go)
+// generates further, unacknowledged alerts naturally on its first tick from
+// the rest of the live data (e.g. other high-risk entities matching the
+// risk_threshold rule). Idempotent — only runs when alert_rules is empty.
+func seedAlerts(ctx context.Context, db *mongo.Database, log *zap.Logger) error {
+	rulesCol := db.Collection("alert_rules")
+	if n, _ := rulesCol.CountDocuments(ctx, bson.M{}); n > 0 {
+		return nil
+	}
+	now := time.Now()
+
+	rules := []interface{}{
+		bson.M{"_id": "rule-seed-watchlist", "name": "Watchlist Sensor Hit", "type": "watchlist_detection",
+			"enabled": true, "severity": "high", "params": bson.M{}, "created_at": now},
+		bson.M{"_id": "rule-seed-threat", "name": "Hostile Threat Classification", "type": "threat_class",
+			"enabled": true, "severity": "critical", "params": bson.M{"classes": []string{"hostile"}}, "created_at": now},
+		bson.M{"_id": "rule-seed-risk", "name": "High Risk Entity (>=80)", "type": "risk_threshold",
+			"enabled": true, "severity": "medium", "params": bson.M{"min_score": 80}, "created_at": now},
+	}
+	if _, err := rulesCol.InsertMany(ctx, rules); err != nil {
+		return err
+	}
+
+	watchlistCol := db.Collection("watchlist")
+	watchlistDocs := []interface{}{
+		bson.M{"_id": "wl-seed-001", "entity_id": "ent-009", "entity_label": "Timur Umarov",
+			"note": "High-priority narcotics target; linked to hostile convoy track HOSTILE-01 (t-001).",
+			"created_by": "admin@platform.io", "created_at": now.Add(-6 * 24 * time.Hour)},
+		bson.M{"_id": "wl-seed-002", "entity_id": "ent-011", "entity_label": "Hassan Al-Rashidi",
+			"note": "Terrorism-finance nexus; frequent Tashkent visits flagged by border control.",
+			"created_by": "admin@platform.io", "created_at": now.Add(-3 * 24 * time.Hour)},
+	}
+	if _, err := watchlistCol.InsertMany(ctx, watchlistDocs); err != nil {
+		return err
+	}
+
+	alertsCol := db.Collection("alerts")
+	ackAt1 := now.Add(-1 * time.Hour)
+	ackAt2 := now.Add(-30 * time.Minute)
+	ackAt3 := now.Add(-10 * time.Minute)
+	sampleAlerts := []interface{}{
+		bson.M{"_id": "alert-seed-001", "rule_id": "rule-seed-watchlist", "rule_name": "Watchlist Sensor Hit",
+			"severity": "high", "title": "Watchlisted entity detected",
+			"message": "Timur Umarov, who is on the watchlist, was picked up by a sensor.",
+			"entity_id": "ent-009", "detection_id": "det-016", "subject_key": "rule-seed-watchlist|detection|det-016",
+			"acknowledged": true, "ack_by": "analyst@platform.io", "ack_at": ackAt1, "created_at": now.Add(-2 * time.Hour)},
+		bson.M{"_id": "alert-seed-002", "rule_id": "rule-seed-threat", "rule_name": "Hostile Threat Classification",
+			"severity": "critical", "title": "Threat classification match",
+			"message": "Track HOSTILE-01 (convoy) is classified \"hostile\", matching this rule's watched classes.",
+			"entity_id": "ent-009", "threat_id": "t-001", "subject_key": "rule-seed-threat|threat|t-001",
+			"acknowledged": true, "ack_by": "admin@platform.io", "ack_at": ackAt2, "created_at": now.Add(-3 * time.Hour)},
+		bson.M{"_id": "alert-seed-003", "rule_id": "rule-seed-risk", "rule_name": "High Risk Entity (>=80)",
+			"severity": "medium", "title": "High risk entity",
+			"message": "Timur Umarov has a risk score of 93, at or above the rule threshold of 80.",
+			"entity_id": "ent-009", "subject_key": "rule-seed-risk|entity|ent-009",
+			"acknowledged": true, "ack_by": "analyst@platform.io", "ack_at": ackAt3, "created_at": now.Add(-4 * time.Hour)},
+	}
+	if _, err := alertsCol.InsertMany(ctx, sampleAlerts); err != nil {
+		return err
+	}
+
+	log.Info("seeded alert rules + watchlist + sample alerts",
+		zap.Int("rules", len(rules)), zap.Int("watchlist", len(watchlistDocs)), zap.Int("sample_alerts", len(sampleAlerts)))
 	return nil
 }

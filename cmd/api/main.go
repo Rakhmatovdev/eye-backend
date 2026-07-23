@@ -10,6 +10,8 @@ import (
 
 	"intelligence-platform/internal/accesscontrol"
 	"intelligence-platform/internal/ai"
+	"intelligence-platform/internal/alerts"
+	"intelligence-platform/internal/analytics"
 	"intelligence-platform/internal/audit"
 	"intelligence-platform/internal/auth"
 	"intelligence-platform/internal/cases"
@@ -98,12 +100,15 @@ func main() {
 	monitoringSvc := monitoring.NewService()
 	monitoringHist := monitoring.NewHistory(monitoring.HistoryCapacity)
 	agentSvc := remoteagent.NewService(db, log)
+	alertsSvc := alerts.NewService(db, log)
+	analyticsSvc := analytics.NewService(db, log)
 
 	// 5. Init Hub & WebSocket
 	wsHub := realtime.NewHub(log)
 	go wsHub.Run()
 	go realtime.StartBroadcaster(wsHub)
 	go monitoring.StartSampler(monitoringSvc, monitoringHist)
+	go alerts.StartEvaluator(db, wsHub, log)
 
 	// 6. Init Handlers
 	authHandler := auth.NewHandler(authSvc, auditSvc)
@@ -119,6 +124,8 @@ func main() {
 	aiHandler := ai.NewHandler(aiSvc)
 	monitoringHandler := monitoring.NewHandler(monitoringSvc, monitoringHist)
 	agentHandler := remoteagent.NewHandler(agentSvc)
+	alertsHandler := alerts.NewHandler(alertsSvc)
+	analyticsHandler := analytics.NewHandler(analyticsSvc)
 
 	// 7. Setup Router
 	if cfg.IsProduction() {
@@ -206,6 +213,13 @@ func main() {
 		v1Auth.DELETE("/entities/relationship/:id", entitiesHandler.DeleteRelationship)
 		v1Auth.POST("/graph/expand", entitiesHandler.Expand)
 		v1Auth.POST("/graph/path", entitiesHandler.FindPath)
+		v1Auth.GET("/entities/:id/report", entitiesHandler.GetReport)
+
+		// Graph analytics (canonical GET forms; POST /graph/path above kept
+		// working for existing callers)
+		v1Auth.GET("/graph/shortest-path", entitiesHandler.ShortestPath)
+		v1Auth.GET("/graph/common-neighbors", entitiesHandler.CommonNeighbors)
+		v1Auth.GET("/graph/stats", entitiesHandler.GraphStats)
 
 		// Timeline (Time Analysis) — time-stamped events tied to entities
 		v1Auth.GET("/timeline", eventsHandler.List)
@@ -249,6 +263,7 @@ func main() {
 		v1Auth.GET("/cases/:id/entities", casesHandler.GetEntities)
 		v1Auth.POST("/cases/:id/entities", casesHandler.AddEntity)
 		v1Auth.DELETE("/cases/:id/entities/:entity_id", casesHandler.RemoveEntity)
+		v1Auth.GET("/cases/:id/report", casesHandler.GetReport)
 
 		// Security (SIEM)
 		v1Auth.GET("/security/dashboard", securityHandler.GetDashboard)
@@ -275,6 +290,23 @@ func main() {
 		v1Auth.GET("/agents/:id", agentHandler.GetAgent)
 		v1Auth.POST("/agents/:id/command", agentHandler.CreateCommand)
 		v1Auth.GET("/agents/:id/commands", agentHandler.ListCommands)
+
+		// Watchlist + Alerts engine
+		v1Auth.GET("/watchlist", alertsHandler.ListWatchlist)
+		v1Auth.POST("/watchlist", alertsHandler.AddWatchlist)
+		v1Auth.DELETE("/watchlist/:id", alertsHandler.DeleteWatchlist)
+		v1Auth.GET("/alerts", alertsHandler.ListAlerts)
+		v1Auth.PATCH("/alerts/:id/ack", alertsHandler.AckAlert)
+		// Alert rules — admin only (static routes before /alerts/:id/ack would
+		// collide if ordered after it; gin's router handles this fine either
+		// way, but /alerts/rules is registered here for readability).
+		v1Auth.GET("/alerts/rules", userAdminMW, alertsHandler.ListRules)
+		v1Auth.POST("/alerts/rules", userAdminMW, alertsHandler.CreateRule)
+		v1Auth.PUT("/alerts/rules/:id", userAdminMW, alertsHandler.UpdateRule)
+		v1Auth.DELETE("/alerts/rules/:id", userAdminMW, alertsHandler.DeleteRule)
+
+		// AI pattern detection — computed server-side, on request
+		v1Auth.GET("/analytics/patterns", analyticsHandler.GetPatterns)
 	}
 
 	// WebSocket handler — requires a valid access token via ?token= query
